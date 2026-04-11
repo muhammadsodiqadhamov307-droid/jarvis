@@ -85,6 +85,53 @@ http://localhost:5174
 
 The backend runs on `http://localhost:3001`.
 
+## Settings Menu
+
+Open `Settings` in the top bar to configure the local assistant without editing `.env` manually.
+
+You can set:
+
+- Preferred address and Uzbekistan time zone.
+- Gemini API key, Live model, text model, voice, and sentence pause timing.
+- Tavily or SerpAPI search key.
+- ElevenLabs fallback key, voice ID, and model.
+- Windows startup behavior.
+
+Secret fields are not shown back in the browser. Leaving a secret field blank keeps the existing key. Use `Clear stored key` to remove one.
+
+Most backend settings apply to new requests immediately. If you change Gemini Live voice credentials or models, refresh the app so the Live WebSocket reconnects cleanly.
+
+## Windows Installable App
+
+The project includes a Windows installer build path using Inno Setup.
+
+Build the installer:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\windows\installer\build_installer.ps1
+```
+
+If Inno Setup is installed somewhere custom:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\windows\installer\build_installer.ps1 -InnoCompilerPath "C:\Users\FastTyper\AppData\Local\Programs\Inno Setup 6\ISCC.exe"
+```
+
+The build script:
+
+- Builds the React frontend.
+- Copies the backend, frontend build, launcher scripts, and local Node runtime into `release\jarvis-ai`.
+- Excludes your SQLite database and `.env` secrets.
+- Compiles `release\installer\JarvisAI-Setup.exe` when Inno Setup is available.
+
+The installed app launches the local backend in the background and opens JARVIS in an Edge app window when available. The installer can add JARVIS to Windows startup, and the in-app Settings menu can toggle startup later.
+
+For development without building an installer:
+
+```powershell
+npm run start:app
+```
+
 ## Voice Notes
 
 Browser speech recognition works best in Chrome or Edge. The app supports:

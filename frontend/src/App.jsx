@@ -1,12 +1,14 @@
 import React from 'react';
 import ArcReactor from './components/ArcReactor.jsx';
 import NotesPanel from './components/NotesPanel.jsx';
+import SettingsPanel from './components/SettingsPanel.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import Transcript from './components/Transcript.jsx';
 import { useJarvis } from './hooks/useJarvis.js';
 
 export default function App() {
   const jarvis = useJarvis();
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   return (
     <main className="hud-grid scanline relative min-h-screen overflow-hidden bg-void text-slate-100">
@@ -15,6 +17,7 @@ export default function App() {
         liveReady={jarvis.liveReady}
         address={jarvis.address}
         onAddressChange={jarvis.setAddress}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="grid min-h-[calc(100vh-88px)] grid-cols-1 lg:grid-cols-[320px_minmax(360px,1fr)_380px]">
         <NotesPanel
@@ -58,6 +61,7 @@ export default function App() {
           searchResults={jarvis.searchResults}
         />
       </div>
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </main>
   );
 }

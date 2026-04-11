@@ -18,6 +18,8 @@ import { appendToNote, createNote, deleteNote, listNotes } from './notes.js';
 import { webSearch } from './search.js';
 import { desktopReply, executeDesktopIntent, resolveDesktopIntent } from './desktop.js';
 import { formatUserDateTime, getUserTimeContext } from './time.js';
+import { getSettingsForClient, updateSettings } from './settings.js';
+import { getStartupStatus, setStartupEnabled } from './startup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
@@ -93,6 +95,34 @@ app.delete('/api/notes/:identifier', (req, res) => {
 app.post('/api/search', async (req, res, next) => {
   try {
     res.json(await webSearch(req.body.query));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/settings', async (_req, res, next) => {
+  try {
+    res.json({
+      settings: getSettingsForClient(),
+      startup: await getStartupStatus()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/settings', async (req, res, next) => {
+  try {
+    const settings = updateSettings(req.body.settings || {}, req.body.clearSecrets || []);
+    let startup = await getStartupStatus();
+    if (typeof req.body.startupEnabled === 'boolean') {
+      startup = await setStartupEnabled(req.body.startupEnabled);
+    }
+    res.json({
+      settings,
+      startup,
+      message: 'Settings saved. Restart JARVIS or refresh the app to reconnect live voice with updated credentials.'
+    });
   } catch (error) {
     next(error);
   }
@@ -231,6 +261,14 @@ app.post('/api/tts', async (req, res, next) => {
     });
   }
 });
+
+if (process.env.JARVIS_SERVE_FRONTEND === 'true' || process.env.NODE_ENV === 'production') {
+  const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
+  app.use(express.static(frontendDist));
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
 
 app.use((error, _req, res, _next) => {
   console.error(error);

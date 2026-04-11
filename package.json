@@ -9,6 +9,8 @@
     "install:all": "npm install --prefix backend && npm install --prefix frontend",
     "postinstall": "npm run install:all",
     "build": "npm run build --prefix frontend",
+    "start:app": "powershell -ExecutionPolicy Bypass -File deploy\\windows\\launcher\\start-jarvis.ps1",
+    "build:installer": "powershell -ExecutionPolicy Bypass -File deploy\\windows\\installer\\build_installer.ps1",
     "start": "npm run start --prefix backend"
   },
   "devDependencies": {
