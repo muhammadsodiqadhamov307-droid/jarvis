@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" translate="no" class="notranslate">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="google" content="notranslate" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JARVIS AI</title>
+  </head>
+  <body>
+    <div id="root">
+      <main style="min-height:100vh;background:#0a0a0f;color:#00d4ff;font-family:Segoe UI,Arial,sans-serif;display:grid;place-items:center;">
+        <section style="border:1px solid rgba(0,212,255,.35);padding:24px;border-radius:8px;background:#11151f;">
+          <p style="letter-spacing:.18em;text-transform:uppercase;margin:0 0 12px;">JARVIS booting</p>
+          <p style="color:#d7f8ff;margin:0;">Initializing interface, Sir.</p>
+        </section>
+      </main>
+    </div>
+    <script>
+      window.addEventListener('error', function (event) {
+        var root = document.getElementById('root');
+        if (!root) return;
+        root.innerHTML = '<main style="min-height:100vh;background:#0a0a0f;color:#fff;font-family:Segoe UI,Arial,sans-serif;display:grid;place-items:center;padding:24px;"><section style="max-width:760px;border:1px solid rgba(255,61,61,.5);background:#11151f;border-radius:8px;padding:24px;"><p style="color:#ff3d3d;letter-spacing:.18em;text-transform:uppercase;">JARVIS frontend fault</p><pre style="white-space:pre-wrap;color:#ffb4b4;">' + String(event.message || 'Unknown error') + '</pre></section></main>';
+      });
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

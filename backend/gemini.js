@@ -1,0 +1,302 @@
+import WebSocket, { WebSocketServer } from 'ws';
+import { buildSystemPrompt } from './memory.js';
+
+const DEFAULT_LIVE_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const DEFAULT_LANGUAGE = 'English';
+
+export function attachGeminiLiveProxy(server) {
+  const wss = new WebSocketServer({ server, path: '/ws/gemini-live' });
+
+  wss.on('connection', (client) => {
+    if (!process.env.GEMINI_API_KEY) {
+      client.send(JSON.stringify({ type: 'error', message: 'GEMINI_API_KEY is not configured. Text mode remains available.' }));
+      client.close(1011, 'Missing Gemini API key');
+      return;
+    }
+
+    const model = process.env.GEMINI_LIVE_MODEL || 'gemini-live-2.5-flash-native-audio';
+    const baseUrl = process.env.GEMINI_LIVE_WS_URL || DEFAULT_LIVE_WS_URL;
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    const upstreamUrl = `${baseUrl}${separator}key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+    const upstream = new WebSocket(upstreamUrl);
+    let configured = false;
+    let setupComplete = false;
+    const pendingClientMessages = [];
+    let clientAudioFrames = 0;
+    let clientMessages = 0;
+    let liveAudioFrames = 0;
+
+    upstream.on('open', () => {
+      configured = true;
+      upstream.send(JSON.stringify({
+        setup: {
+          model: `models/${model}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            temperature: 0.7,
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: process.env.GEMINI_VOICE || 'Kore'
+                }
+              }
+            }
+          },
+          systemInstruction: {
+            parts: [{ text: buildLiveSystemPrompt(process.env.DEFAULT_ADDRESS || 'Sir') }]
+          },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
+          realtimeInputConfig: {
+            automaticActivityDetection: {
+              disabled: false,
+              silenceDurationMs: Number(process.env.GEMINI_LIVE_SILENCE_MS || 1200)
+            }
+          }
+        }
+      }));
+      console.log(`Gemini Live upstream connected with model ${model}`);
+      client.send(JSON.stringify({ type: 'live-ready', model }));
+    });
+
+    client.on('message', (message) => {
+      clientMessages += 1;
+      if (clientMessages === 1 || clientMessages % 100 === 0) {
+        console.log(`Browser messages received by Live proxy: ${clientMessages}`);
+      }
+      if (upstream.readyState === WebSocket.OPEN && setupComplete) {
+        logClientAudioFrame(message);
+        upstream.send(message);
+      } else if (upstream.readyState === WebSocket.OPEN) {
+        pendingClientMessages.push(message);
+      } else if (!configured) {
+        client.send(JSON.stringify({ type: 'status', message: 'Connecting to Gemini Live.' }));
+      }
+    });
+
+    upstream.on('message', (message) => {
+      const text = message.toString();
+      try {
+        const payload = JSON.parse(text);
+        const keys = Object.keys(payload);
+        if (!payload.serverContent && !payload.setupComplete && !payload.error) {
+          console.log(`Gemini Live message keys: ${keys.join(', ')}`);
+        }
+        if (payload.error) console.warn('Gemini Live error:', JSON.stringify(payload.error));
+        const inputTranscript = payload.serverContent?.inputTranscription?.text;
+        const outputTranscript = payload.serverContent?.outputTranscription?.text;
+        if (inputTranscript) console.log(`Gemini Live heard: ${inputTranscript}`);
+        if (outputTranscript) console.log(`Gemini Live said: ${outputTranscript}`);
+        const parts = payload.serverContent?.modelTurn?.parts || payload.serverContent?.modelTurn?.content?.parts || [];
+        if (parts.some((part) => part.inlineData || part.inline_data)) {
+          liveAudioFrames += 1;
+          if (liveAudioFrames === 1 || liveAudioFrames % 25 === 0) {
+            console.log(`Gemini Live audio frames received: ${liveAudioFrames}`);
+          }
+        }
+        if (payload.setupComplete || payload.setup_complete) {
+          setupComplete = true;
+          console.log('Gemini Live setup complete');
+          while (pendingClientMessages.length) {
+            const pending = pendingClientMessages.shift();
+            logClientAudioFrame(pending);
+            upstream.send(pending);
+          }
+        }
+      } catch {
+        // Upstream frames may not always be JSON.
+      }
+      if (client.readyState === WebSocket.OPEN) client.send(text);
+    });
+
+    upstream.on('error', (error) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: 'error', message: error.message }));
+      }
+    });
+
+    upstream.on('close', (code, reason) => {
+      console.warn(`Gemini Live upstream closed: ${code} ${reason.toString()}`);
+      if (client.readyState === WebSocket.OPEN) client.close(code, reason.toString());
+    });
+
+    client.on('close', () => {
+      if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close();
+    });
+
+    function logClientAudioFrame(message) {
+      try {
+        const payload = JSON.parse(message.toString());
+        if (payload.realtimeInput?.audio || payload.realtimeInput?.mediaChunks) {
+          clientAudioFrames += 1;
+          if (clientAudioFrames === 1 || clientAudioFrames % 100 === 0) {
+            console.log(`Browser audio frames forwarded to Gemini Live: ${clientAudioFrames}`);
+          }
+        }
+      } catch {
+        // Ignore non-JSON messages.
+      }
+    }
+  });
+}
+
+function buildLiveSystemPrompt(address) {
+  return `${buildSystemPrompt(address)}
+
+Live voice policy:
+- The user is speaking English. Treat ambiguous, noisy, or accent-heavy speech as English.
+- Never switch to another language or another writing system.
+- If transcription appears to contain non-English words, first infer the closest likely English phrase.
+- If the phrase is still unclear, ask for clarification in English only.
+- Do not claim that you opened, closed, launched, played, paused, or controlled local computer apps. A separate local desktop controller handles those actions and will confirm them.
+- For weather, news, latest, current, search, online, or internet questions, do not guess from memory. Briefly acknowledge that you are checking; a separate verified web-search response may be provided.
+- Short greetings such as "Jarvis", "hi Jarvis", and "are you there" are valid commands and should receive a brief acknowledgement.
+- Keep responses in polished ${DEFAULT_LANGUAGE} with a refined British tone.`;
+}
+
+export async function geminiText(prompt, address = 'Sir') {
+  if (!process.env.GEMINI_API_KEY) return null;
+  const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: buildSystemPrompt(address, prompt) }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.75,
+        maxOutputTokens: 800
+      }
+    })
+  });
+
+  if (!response.ok) throw new Error(`Gemini text request failed: ${response.status}`);
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim() || null;
+}
+
+export async function* geminiTextStream(prompt, address = 'Sir') {
+  if (!process.env.GEMINI_API_KEY) return;
+  const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: buildSystemPrompt(address, prompt) }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.65,
+        maxOutputTokens: 500
+      }
+    })
+  });
+
+  if (!response.ok || !response.body) throw new Error(`Gemini stream request failed: ${response.status}`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let eventLines = [];
+
+  const parseEvent = function* (lines) {
+    const data = lines
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s*/, ''))
+      .join('\n')
+      .trim();
+    if (!data || data === '[DONE]') return;
+    const json = JSON.parse(data);
+    const text = json.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('');
+    if (text) yield text;
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = done ? '' : lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.trim() === '') {
+        if (eventLines.length) {
+          yield* parseEvent(eventLines);
+          eventLines = [];
+        }
+      } else {
+        eventLines.push(line);
+      }
+    }
+
+    if (done) break;
+  }
+
+  if (buffer.trim()) eventLines.push(buffer);
+  if (eventLines.length) {
+    yield* parseEvent(eventLines);
+  }
+}
+
+export async function geminiTts(text) {
+  if (!process.env.GEMINI_API_KEY) return null;
+  const model = process.env.GEMINI_TTS_MODEL || 'gemini-2.5-flash-preview-tts';
+  const voiceName = process.env.GEMINI_VOICE || 'Puck';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            {
+              text: `Read this as JARVIS in polished British English with a refined British accent: calm, precise, natural, quietly witty, formal, and not robotic. Keep the delivery crisp and confident. ${text}`
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName
+            }
+          }
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    const error = new Error(`Gemini TTS request failed: ${response.status}${body ? ` ${body.slice(0, 500)}` : ''}`);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
+  const data = await response.json();
+  const inline = data.candidates?.[0]?.content?.parts?.find((part) => part.inlineData)?.inlineData;
+  if (!inline?.data) throw new Error('Gemini TTS returned no audio.');
+  return {
+    data: inline.data,
+    mimeType: inline.mimeType || 'audio/pcm;rate=24000',
+    voiceName,
+    model
+  };
+}
