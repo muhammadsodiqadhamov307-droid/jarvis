@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { API_URL, LIVE_WS_URL } from '../config.js';
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3001' : window.location.origin);
 const LIVE_AUDIO_ENABLED = import.meta.env.VITE_ENABLE_LIVE_AUDIO === 'true';
 const LIVE_VOICE_MODE = import.meta.env.VITE_TTS_PROVIDER === 'live' || LIVE_AUDIO_ENABLED;
 const SPEECH_RECOGNITION_LANG = import.meta.env.VITE_SPEECH_RECOGNITION_LANG || 'en-US';
@@ -49,13 +49,7 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
   }, [onFinalText, onLiveFinalText, onLiveStatus, onLiveToolResult, onLiveTranscript, onSpeechEnd, onSpeechStart]);
 
   const connectLive = useCallback(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = import.meta.env.VITE_API_WS || (
-      import.meta.env.DEV
-        ? `${protocol}//${window.location.hostname}:3001/ws/gemini-live`
-        : `${protocol}//${window.location.host}/ws/gemini-live`
-    );
-    const ws = new WebSocket(host);
+    const ws = new WebSocket(LIVE_WS_URL);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 

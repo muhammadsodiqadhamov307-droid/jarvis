@@ -30,8 +30,10 @@ const app = express();
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3001);
 
+app.disable('x-powered-by');
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5174' }));
 app.use(express.json({ limit: '10mb' }));
+app.use(securityHeaders);
 
 attachGeminiLiveProxy(server);
 
@@ -497,6 +499,28 @@ function isSlowLookup(message) {
 function isSearchRequest(message) {
   return /^(search|web search|search online|look up|google)\b/i.test(message)
     || /\b(latest|news|weather|forecast|temperature|current|today|online|internet|what happened)\b/i.test(message);
+}
+
+function securityHeaders(_req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'microphone=(self), camera=(), geolocation=(), payment=()');
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "frame-ancestors 'none'",
+      "connect-src 'self' ws: wss:",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "media-src 'self' data: blob:",
+      "font-src 'self' data:"
+    ].join('; ')
+  );
+  next();
 }
 
 async function synthesizeSpeech(text) {

@@ -17,6 +17,8 @@ sudo chown -R ubuntu:ubuntu "$APP_DIR"
 
 if [[ -f "$UPLOADED_ENV" ]]; then
   cp "$UPLOADED_ENV" "$APP_DIR/.env"
+elif [[ -f "$APP_DIR/.env" ]]; then
+  true
 else
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
 fi

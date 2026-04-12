@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Eye, EyeOff, Loader2, Power, Save, X } from 'lucide-react';
-
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:3001' : window.location.origin);
+import { API_URL } from '../config.js';
 
 export default function SettingsPanel({ open, onClose }) {
   const [loading, setLoading] = useState(false);

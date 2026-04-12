@@ -11,7 +11,11 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
 
   return (
-    <main className="hud-grid scanline relative min-h-screen overflow-hidden bg-void text-slate-100">
+    <main
+      className="hud-grid scanline notranslate relative min-h-screen overflow-hidden bg-void text-slate-100"
+      translate="no"
+      spellCheck={false}
+    >
       <StatusBar
         status={jarvis.status}
         liveReady={jarvis.liveReady}
