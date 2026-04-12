@@ -35,6 +35,9 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
   const playbackSerialRef = useRef(0);
   const bargeInFramesRef = useRef(0);
   const sentLiveFramesRef = useRef(0);
+  const liveActivityRef = useRef(false);
+  const liveSpeechFramesRef = useRef(0);
+  const liveSilenceFramesRef = useRef(0);
   const intentionallyStoppedRef = useRef(false);
   const startingRef = useRef(false);
   const assistantAudioBlockUntilRef = useRef(0);
@@ -104,6 +107,9 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
     speakingRef.current = false;
     speechRunRef.current += 1;
     bargeInFramesRef.current = 0;
+    liveActivityRef.current = false;
+    liveSpeechFramesRef.current = 0;
+    liveSilenceFramesRef.current = 0;
     assistantAudioBlockUntilRef.current = 0;
     livePlaybackTimeRef.current = audioContextRef.current?.currentTime || 0;
     if (activeSourceRef.current) {
@@ -200,10 +206,37 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
       const data = new Uint8Array(analyser.frequencyBinCount);
       processor.onaudioprocess = (event) => {
         if (!LIVE_AUDIO_ENABLED) return;
-        if (speakingRef.current || Date.now() < assistantAudioBlockUntilRef.current) return;
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN || intentionallyStoppedRef.current) return;
-        const pcm = downsampleToPcm16(event.inputBuffer.getChannelData(0), audioContext.sampleRate, 16000);
+        const input = event.inputBuffer.getChannelData(0);
+        const rms = calculateRms(input);
+        const userIsSpeaking = rms > 0.012;
+
+        if (speakingRef.current || Date.now() < assistantAudioBlockUntilRef.current) {
+          if (userIsSpeaking && rms > 0.03) {
+            bargeInFramesRef.current += 1;
+            if (bargeInFramesRef.current > 6) cancelSpeech();
+          }
+          return;
+        }
+
+        if (userIsSpeaking) {
+          liveSpeechFramesRef.current += 1;
+          liveSilenceFramesRef.current = 0;
+        } else {
+          liveSilenceFramesRef.current += 1;
+          liveSpeechFramesRef.current = 0;
+        }
+
+        if (!liveActivityRef.current && liveSpeechFramesRef.current >= 2) {
+          liveActivityRef.current = true;
+          ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+          console.info('JARVIS Live audio: user activity started.');
+        }
+
+        if (!liveActivityRef.current) return;
+
+        const pcm = downsampleToPcm16(input, audioContext.sampleRate, 16000);
         sentLiveFramesRef.current += 1;
         if (sentLiveFramesRef.current === 1) {
           console.info('JARVIS Live audio: sending microphone PCM frames.');
@@ -216,6 +249,14 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
             }
           }
         }));
+
+        if (liveSilenceFramesRef.current >= 12) {
+          liveActivityRef.current = false;
+          liveSpeechFramesRef.current = 0;
+          liveSilenceFramesRef.current = 0;
+          ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+          console.info('JARVIS Live audio: user activity ended.');
+        }
       };
 
       const tick = () => {
@@ -598,6 +639,14 @@ function floatToPcm16(input) {
     output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
   return output;
+}
+
+function calculateRms(input) {
+  let sum = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    sum += input[i] * input[i];
+  }
+  return Math.sqrt(sum / input.length);
 }
 
 function arrayBufferToBase64(buffer) {

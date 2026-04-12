@@ -51,7 +51,7 @@ export function attachGeminiLiveProxy(server) {
             outputAudioTranscription: {},
             realtimeInputConfig: {
               automaticActivityDetection: {
-                disabled: false,
+                disabled: true,
                 silenceDurationMs: Number(process.env.GEMINI_LIVE_SILENCE_MS || 1200)
               }
             }
