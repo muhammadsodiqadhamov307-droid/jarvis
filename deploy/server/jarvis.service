@@ -1,0 +1,17 @@
+[Unit]
+Description=JARVIS AI Server
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/jarvis
+Environment=NODE_ENV=production
+Environment=JARVIS_SERVE_FRONTEND=true
+ExecStart=/usr/bin/node backend/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

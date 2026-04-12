@@ -1,75 +1,92 @@
-import { db, nowIso } from './db.js';
+import { query, nowIso } from './db.js';
 import { getUserTimeContext } from './time.js';
 
 const SHORT_TERM_LIMIT = 20;
 
-export function addExchange(role, content) {
+export async function addExchange(role, content) {
   const text = String(content || '').trim();
   if (!text) return null;
 
-  const insert = db.prepare('INSERT INTO conversations (role, content, created_at) VALUES (?, ?, ?)');
-  const info = insert.run(role, text, nowIso());
+  const inserted = await query(
+    'INSERT INTO conversations (role, content, created_at) VALUES ($1, $2, $3) RETURNING id',
+    [role, text, nowIso()]
+  );
 
-  const rows = db.prepare('SELECT id FROM conversations ORDER BY id DESC LIMIT -1 OFFSET ?').all(SHORT_TERM_LIMIT);
-  if (rows.length) {
-    const ids = rows.map((row) => row.id);
-    db.prepare(`DELETE FROM conversations WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+  const oldRows = await query(
+    'SELECT id FROM conversations ORDER BY id DESC LIMIT 100000 OFFSET $1',
+    [SHORT_TERM_LIMIT]
+  );
+
+  if (oldRows.rows.length) {
+    await Promise.all(oldRows.rows.map((row) => query('DELETE FROM conversations WHERE id = $1', [row.id])));
   }
 
-  return info.lastInsertRowid;
+  return inserted.rows[0]?.id || null;
 }
 
-export function getShortTerm() {
-  return db.prepare('SELECT role, content, created_at FROM conversations ORDER BY id ASC LIMIT ?').all(SHORT_TERM_LIMIT);
+export async function getShortTerm() {
+  const result = await query(
+    'SELECT role, content, created_at FROM conversations ORDER BY id ASC LIMIT $1',
+    [SHORT_TERM_LIMIT]
+  );
+  return result.rows;
 }
 
-export function rememberFact(content, key = null, metadata = {}) {
+export async function rememberFact(content, key = null, metadata = {}) {
   const text = String(content || '').trim();
   if (!text) return null;
 
-  return db.prepare(`
+  const result = await query(`
     INSERT INTO memories (type, key, content, metadata, created_at, updated_at)
-    VALUES ('long_term', ?, ?, ?, ?, ?)
-  `).run(key, text, JSON.stringify(metadata), nowIso(), nowIso()).lastInsertRowid;
+    VALUES ('long_term', $1, $2, $3, $4, $5)
+    RETURNING id
+  `, [key, text, JSON.stringify(metadata), nowIso(), nowIso()]);
+
+  return result.rows[0]?.id || null;
 }
 
-export function forgetMemory(query) {
-  const q = `%${String(query || '').trim()}%`;
+export async function forgetMemory(search) {
+  const q = `%${String(search || '').trim()}%`;
   if (q === '%%') return 0;
-  const result = db.prepare("DELETE FROM memories WHERE type = 'long_term' AND (content LIKE ? OR key LIKE ?)").run(q, q);
-  return result.changes;
+  const result = await query(
+    "DELETE FROM memories WHERE type = 'long_term' AND (content ILIKE $1 OR key ILIKE $2)",
+    [q, q]
+  );
+  return result.rowCount;
 }
 
-export function addEpisodicSummary(content, metadata = {}) {
+export async function addEpisodicSummary(content, metadata = {}) {
   const text = String(content || '').trim();
   if (!text) return null;
-  return db.prepare(`
+  const result = await query(`
     INSERT INTO memories (type, key, content, metadata, created_at, updated_at)
-    VALUES ('episodic', 'session', ?, ?, ?, ?)
-  `).run(text, JSON.stringify(metadata), nowIso(), nowIso()).lastInsertRowid;
+    VALUES ('episodic', 'session', $1, $2, $3, $4)
+    RETURNING id
+  `, [text, JSON.stringify(metadata), nowIso(), nowIso()]);
+  return result.rows[0]?.id || null;
 }
 
-export function getRelevantMemories(query = '') {
-  const normalized = String(query || '').trim();
+export async function getRelevantMemories(search = '') {
+  const normalized = String(search || '').trim();
   const longTerm = normalized
-    ? db.prepare(`
+    ? await query(`
         SELECT * FROM memories
-        WHERE type = 'long_term' AND content LIKE ?
+        WHERE type = 'long_term' AND content ILIKE $1
         ORDER BY updated_at DESC LIMIT 10
-      `).all(`%${normalized}%`)
-    : db.prepare("SELECT * FROM memories WHERE type = 'long_term' ORDER BY updated_at DESC LIMIT 10").all();
+      `, [`%${normalized}%`])
+    : await query("SELECT * FROM memories WHERE type = 'long_term' ORDER BY updated_at DESC LIMIT 10");
 
-  const episodic = db.prepare("SELECT * FROM memories WHERE type = 'episodic' ORDER BY created_at DESC LIMIT 5").all();
+  const episodic = await query("SELECT * FROM memories WHERE type = 'episodic' ORDER BY created_at DESC LIMIT 5");
 
   return {
-    shortTerm: getShortTerm(),
-    longTerm,
-    episodic
+    shortTerm: await getShortTerm(),
+    longTerm: longTerm.rows,
+    episodic: episodic.rows
   };
 }
 
-export function buildSystemPrompt(address = 'Sir', query = '') {
-  const memories = getRelevantMemories(query);
+export async function buildSystemPrompt(address = 'Sir', search = '') {
+  const memories = await getRelevantMemories(search);
   const facts = memories.longTerm.map((m) => `- ${m.content}`).join('\n') || '- No durable user facts yet.';
   const episodes = memories.episodic.map((m) => `- ${m.created_at}: ${m.content}`).join('\n') || '- No prior session summaries yet.';
   const recent = memories.shortTerm.map((m) => `${m.role}: ${m.content}`).join('\n') || 'No active conversation yet.';
@@ -91,8 +108,8 @@ Current short-term conversation:
 ${recent}`;
 }
 
-export function summarizeSession() {
-  const history = getShortTerm();
+export async function summarizeSession() {
+  const history = await getShortTerm();
   if (!history.length) return null;
   const userTurns = history.filter((turn) => turn.role === 'user').map((turn) => turn.content);
   const assistantTurns = history.filter((turn) => turn.role === 'assistant').map((turn) => turn.content);

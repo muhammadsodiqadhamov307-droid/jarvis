@@ -10,7 +10,9 @@ const SETTINGS_SCHEMA = [
     section: 'Identity',
     fields: [
       { key: 'DEFAULT_ADDRESS', label: 'Preferred address', defaultValue: 'Sir' },
-      { key: 'USER_TIMEZONE', label: 'Time zone', defaultValue: 'Asia/Tashkent' }
+      { key: 'USER_TIMEZONE', label: 'Time zone', defaultValue: 'Asia/Tashkent' },
+      { key: 'DATABASE_PROVIDER', label: 'Database provider', defaultValue: 'sqlite' },
+      { key: 'DATABASE_URL', label: 'PostgreSQL URL', secret: true }
     ]
   },
   {
@@ -115,6 +117,9 @@ function writeEnvFile(env) {
     `FRONTEND_ORIGIN=${env.FRONTEND_ORIGIN || process.env.FRONTEND_ORIGIN || 'http://localhost:5174'}`,
     `DEFAULT_ADDRESS=${env.DEFAULT_ADDRESS || 'Sir'}`,
     `USER_TIMEZONE=${env.USER_TIMEZONE || 'Asia/Tashkent'}`,
+    `DATABASE_PROVIDER=${env.DATABASE_PROVIDER || process.env.DATABASE_PROVIDER || 'sqlite'}`,
+    `DATABASE_URL=${env.DATABASE_URL || process.env.DATABASE_URL || ''}`,
+    `DATABASE_SSL=${env.DATABASE_SSL || process.env.DATABASE_SSL || 'false'}`,
     `SQLITE_PATH=${env.SQLITE_PATH || process.env.SQLITE_PATH || './backend/database.sqlite'}`,
     '',
     '# Gemini',

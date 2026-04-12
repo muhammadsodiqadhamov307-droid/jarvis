@@ -26,37 +26,45 @@ export function attachGeminiLiveProxy(server) {
     let clientMessages = 0;
     let liveAudioFrames = 0;
 
-    upstream.on('open', () => {
-      configured = true;
-      upstream.send(JSON.stringify({
-        setup: {
-          model: `models/${model}`,
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            temperature: 0.7,
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: process.env.GEMINI_VOICE || 'Kore'
+    upstream.on('open', async () => {
+      try {
+        configured = true;
+        const systemPrompt = await buildLiveSystemPrompt(process.env.DEFAULT_ADDRESS || 'Sir');
+        upstream.send(JSON.stringify({
+          setup: {
+            model: `models/${model}`,
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              temperature: 0.7,
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: process.env.GEMINI_VOICE || 'Kore'
+                  }
                 }
               }
-            }
-          },
-          systemInstruction: {
-            parts: [{ text: buildLiveSystemPrompt(process.env.DEFAULT_ADDRESS || 'Sir') }]
-          },
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-          realtimeInputConfig: {
-            automaticActivityDetection: {
-              disabled: false,
-              silenceDurationMs: Number(process.env.GEMINI_LIVE_SILENCE_MS || 1200)
+            },
+            systemInstruction: {
+              parts: [{ text: systemPrompt }]
+            },
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+            realtimeInputConfig: {
+              automaticActivityDetection: {
+                disabled: false,
+                silenceDurationMs: Number(process.env.GEMINI_LIVE_SILENCE_MS || 1200)
+              }
             }
           }
+        }));
+        console.log(`Gemini Live upstream connected with model ${model}`);
+        client.send(JSON.stringify({ type: 'live-ready', model }));
+      } catch (error) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'error', message: error.message }));
         }
-      }));
-      console.log(`Gemini Live upstream connected with model ${model}`);
-      client.send(JSON.stringify({ type: 'live-ready', model }));
+        upstream.close(1011, error.message);
+      }
     });
 
     client.on('message', (message) => {
@@ -140,8 +148,8 @@ export function attachGeminiLiveProxy(server) {
   });
 }
 
-function buildLiveSystemPrompt(address) {
-  return `${buildSystemPrompt(address)}
+async function buildLiveSystemPrompt(address) {
+  return `${await buildSystemPrompt(address)}
 
 Live voice policy:
 - The user is speaking English. Treat ambiguous, noisy, or accent-heavy speech as English.
@@ -158,12 +166,13 @@ export async function geminiText(prompt, address = 'Sir') {
   if (!process.env.GEMINI_API_KEY) return null;
   const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const systemPrompt = await buildSystemPrompt(address, prompt);
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: buildSystemPrompt(address, prompt) }]
+        parts: [{ text: systemPrompt }]
       },
       contents: [
         {
@@ -187,12 +196,13 @@ export async function* geminiTextStream(prompt, address = 'Sir') {
   if (!process.env.GEMINI_API_KEY) return;
   const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const systemPrompt = await buildSystemPrompt(address, prompt);
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: {
-        parts: [{ text: buildSystemPrompt(address, prompt) }]
+        parts: [{ text: systemPrompt }]
       },
       contents: [
         {

@@ -1,4 +1,4 @@
-import { db, nowIso } from './db.js';
+import { query, nowIso } from './db.js';
 
 function parseTags(tags = []) {
   if (Array.isArray(tags)) return tags;
@@ -6,58 +6,64 @@ function parseTags(tags = []) {
   return [];
 }
 
-export function listNotes(query = '') {
-  const q = String(query || '').trim();
-  if (!q) {
-    return db.prepare('SELECT * FROM notes ORDER BY updated_at DESC').all().map(hydrateNote);
-  }
-  return db.prepare(`
-    SELECT * FROM notes
-    WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?
-    ORDER BY updated_at DESC
-  `).all(`%${q}%`, `%${q}%`, `%${q}%`).map(hydrateNote);
+export async function listNotes(search = '') {
+  const q = String(search || '').trim();
+  const result = q
+    ? await query(`
+        SELECT * FROM notes
+        WHERE title ILIKE $1 OR content ILIKE $2 OR CAST(tags AS TEXT) ILIKE $3
+        ORDER BY updated_at DESC
+      `, [`%${q}%`, `%${q}%`, `%${q}%`])
+    : await query('SELECT * FROM notes ORDER BY updated_at DESC');
+  return result.rows.map(hydrateNote);
 }
 
-export function createNote({ title, content, tags = [] }) {
+export async function createNote({ title, content, tags = [] }) {
   const body = String(content || '').trim();
   const inferredTitle = String(title || body.slice(0, 48) || 'Untitled note').trim();
   const time = nowIso();
-  const id = db.prepare(`
+  const result = await query(`
     INSERT INTO notes (title, content, tags, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(inferredTitle, body, JSON.stringify(parseTags(tags)), time, time).lastInsertRowid;
-  return getNote(id);
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING id
+  `, [inferredTitle, body, JSON.stringify(parseTags(tags)), time, time]);
+  return getNote(result.rows[0]?.id);
 }
 
-export function getNote(id) {
-  const note = db.prepare('SELECT * FROM notes WHERE id = ?').get(id);
-  return note ? hydrateNote(note) : null;
+export async function getNote(id) {
+  const result = await query('SELECT * FROM notes WHERE id = $1', [id]);
+  return result.rows[0] ? hydrateNote(result.rows[0]) : null;
 }
 
-export function appendToNote(topic, content) {
+export async function appendToNote(topic, content) {
   const q = `%${String(topic || '').trim()}%`;
-  const note = db.prepare('SELECT * FROM notes WHERE title LIKE ? OR tags LIKE ? ORDER BY updated_at DESC LIMIT 1').get(q, q);
+  const result = await query(
+    'SELECT * FROM notes WHERE title ILIKE $1 OR CAST(tags AS TEXT) ILIKE $2 ORDER BY updated_at DESC LIMIT 1',
+    [q, q]
+  );
+  const note = result.rows[0];
   if (!note) {
     return createNote({ title: topic || 'New note', content });
   }
   const updated = `${note.content}\n\n${String(content || '').trim()}`.trim();
-  db.prepare('UPDATE notes SET content = ?, updated_at = ? WHERE id = ?').run(updated, nowIso(), note.id);
+  await query('UPDATE notes SET content = $1, updated_at = $2 WHERE id = $3', [updated, nowIso(), note.id]);
   return getNote(note.id);
 }
 
-export function deleteNote(identifier) {
+export async function deleteNote(identifier) {
   const raw = String(identifier || '').trim();
   if (!raw) return 0;
   const numeric = Number(raw);
-  if (Number.isInteger(numeric)) {
-    return db.prepare('DELETE FROM notes WHERE id = ?').run(numeric).changes;
-  }
-  return db.prepare('DELETE FROM notes WHERE title LIKE ?').run(`%${raw}%`).changes;
+  const result = Number.isInteger(numeric)
+    ? await query('DELETE FROM notes WHERE id = $1', [numeric])
+    : await query('DELETE FROM notes WHERE title ILIKE $1', [`%${raw}%`]);
+  return result.rowCount;
 }
 
 function hydrateNote(note) {
+  const tags = typeof note.tags === 'string' ? JSON.parse(note.tags || '[]') : note.tags || [];
   return {
     ...note,
-    tags: JSON.parse(note.tags || '[]')
+    tags
   };
 }

@@ -20,6 +20,7 @@ import { desktopReply, executeDesktopIntent, resolveDesktopIntent } from './desk
 import { formatUserDateTime, getUserTimeContext } from './time.js';
 import { getSettingsForClient, updateSettings } from './settings.js';
 import { getStartupStatus, setStartupEnabled } from './startup.js';
+import { dbProvider, initDatabase } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
@@ -29,7 +30,7 @@ const app = express();
 const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3001);
 
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173' }));
+app.use(cors({ origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5174' }));
 app.use(express.json({ limit: '10mb' }));
 
 attachGeminiLiveProxy(server);
@@ -38,6 +39,7 @@ app.get('/api/health', (_req, res) => {
   const time = getUserTimeContext();
   res.json({
     ok: true,
+    database: dbProvider(),
     time: time.dateTime,
     timeZone: time.timeZone,
     liveVoiceConfigured: Boolean(process.env.GEMINI_API_KEY),
@@ -47,49 +49,85 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.get('/api/session', (req, res) => {
-  const address = req.query.address || process.env.DEFAULT_ADDRESS || 'Sir';
-  const time = getUserTimeContext();
-  res.json({
-    systemPrompt: buildSystemPrompt(address),
-    memories: getRelevantMemories(),
-    time: time.dateTime,
-    timeZone: time.timeZone
-  });
+app.get('/api/session', async (req, res, next) => {
+  try {
+    const address = req.query.address || process.env.DEFAULT_ADDRESS || 'Sir';
+    const time = getUserTimeContext();
+    res.json({
+      systemPrompt: await buildSystemPrompt(address),
+      memories: await getRelevantMemories(),
+      time: time.dateTime,
+      timeZone: time.timeZone
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get('/api/memory', (req, res) => {
-  res.json(getRelevantMemories(req.query.q || ''));
+app.get('/api/memory', async (req, res, next) => {
+  try {
+    res.json(await getRelevantMemories(req.query.q || ''));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post('/api/memory/remember', (req, res) => {
-  const id = rememberFact(req.body.content, req.body.key, req.body.metadata);
-  res.status(201).json({ id });
+app.post('/api/memory/remember', async (req, res, next) => {
+  try {
+    const id = await rememberFact(req.body.content, req.body.key, req.body.metadata);
+    res.status(201).json({ id });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post('/api/memory/forget', (req, res) => {
-  res.json({ deleted: forgetMemory(req.body.query) });
+app.post('/api/memory/forget', async (req, res, next) => {
+  try {
+    res.json({ deleted: await forgetMemory(req.body.query) });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post('/api/session/summary', (_req, res) => {
-  const id = summarizeSession();
-  res.json({ id });
+app.post('/api/session/summary', async (_req, res, next) => {
+  try {
+    const id = await summarizeSession();
+    res.json({ id });
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.get('/api/notes', (req, res) => {
-  res.json(listNotes(req.query.q || ''));
+app.get('/api/notes', async (req, res, next) => {
+  try {
+    res.json(await listNotes(req.query.q || ''));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.post('/api/notes', (req, res) => {
-  res.status(201).json(createNote(req.body));
+app.post('/api/notes', async (req, res, next) => {
+  try {
+    res.status(201).json(await createNote(req.body));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.patch('/api/notes/append', (req, res) => {
-  res.json(appendToNote(req.body.topic, req.body.content));
+app.patch('/api/notes/append', async (req, res, next) => {
+  try {
+    res.json(await appendToNote(req.body.topic, req.body.content));
+  } catch (error) {
+    next(error);
+  }
 });
 
-app.delete('/api/notes/:identifier', (req, res) => {
-  res.json({ deleted: deleteNote(req.params.identifier) });
+app.delete('/api/notes/:identifier', async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteNote(req.params.identifier) });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post('/api/search', async (req, res, next) => {
@@ -158,7 +196,7 @@ app.post('/api/chat', async (req, res, next) => {
     const message = String(req.body.message || '').trim();
     if (!message) return res.status(400).json({ error: 'Message is required.' });
 
-    addExchange('user', message);
+    await addExchange('user', message);
     const commandResult = await handleCommand(message, address);
     let reply = commandResult.reply;
 
@@ -170,7 +208,7 @@ app.post('/api/chat', async (req, res, next) => {
       reply = localJarvisReply(message, address);
     }
 
-    addExchange('assistant', reply);
+    await addExchange('assistant', reply);
     res.json({
       reply,
       command: commandResult.command || null,
@@ -187,7 +225,7 @@ app.post('/api/chat-stream', async (req, res, next) => {
     const message = String(req.body.message || '').trim();
     if (!message) return res.status(400).json({ error: 'Message is required.' });
 
-    addExchange('user', message);
+    await addExchange('user', message);
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
@@ -198,7 +236,7 @@ app.post('/api/chat-stream', async (req, res, next) => {
 
     const commandResult = await handleCommand(message, address);
     if (commandResult.reply) {
-      addExchange('assistant', commandResult.reply);
+      await addExchange('assistant', commandResult.reply);
       writeStreamEvent(res, 'meta', {
         command: commandResult.command || null,
         payload: commandResult.payload || null
@@ -227,7 +265,7 @@ app.post('/api/chat-stream', async (req, res, next) => {
       writeStreamEvent(res, 'delta', { text: reply });
     }
 
-    addExchange('assistant', reply.trim());
+    await addExchange('assistant', reply.trim());
     writeStreamEvent(res, 'done', { reply: reply.trim() });
     res.end();
   } catch (error) {
@@ -277,9 +315,16 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`JARVIS backend listening on http://localhost:${PORT}`);
-});
+initDatabase()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`JARVIS backend listening on http://localhost:${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error('Failed to initialize database:', error);
+    process.exit(1);
+  });
 
 async function handleCommand(message, address) {
   const text = message.trim();
@@ -328,7 +373,7 @@ async function handleCommand(message, address) {
   const remember = text.match(/remember that\s+(.+)/i);
   if (remember) {
     const content = remember[1].trim();
-    rememberFact(content, null, { source: 'voice-command' });
+    await rememberFact(content, null, { source: 'voice-command' });
     return {
       command: 'remember',
       reply: `Committed to memory, ${address}. A rare pleasure to store something intentionally.`
@@ -337,7 +382,7 @@ async function handleCommand(message, address) {
 
   const forget = text.match(/forget that\s+(.+)/i);
   if (forget) {
-    const deleted = forgetMemory(forget[1]);
+    const deleted = await forgetMemory(forget[1]);
     return {
       command: 'forget',
       payload: { deleted },
@@ -349,7 +394,7 @@ async function handleCommand(message, address) {
 
   const create = text.match(/create a note:?\s+(.+)/i);
   if (create) {
-    const note = createNote({ content: create[1], title: create[1].slice(0, 44) });
+    const note = await createNote({ content: create[1], title: create[1].slice(0, 44) });
     return {
       command: 'notes:create',
       payload: note,
@@ -358,7 +403,7 @@ async function handleCommand(message, address) {
   }
 
   if (/show my notes/i.test(text)) {
-    const notes = listNotes();
+    const notes = await listNotes();
     const summary = notes.length
       ? notes.map((note, index) => `${index + 1}. ${note.title}`).join('; ')
       : 'No notes yet.';
@@ -371,7 +416,7 @@ async function handleCommand(message, address) {
 
   const deleteMatch = text.match(/delete note\s+(.+)/i);
   if (deleteMatch) {
-    const deleted = deleteNote(deleteMatch[1]);
+    const deleted = await deleteNote(deleteMatch[1]);
     return {
       command: 'notes:delete',
       payload: { deleted },
@@ -381,7 +426,7 @@ async function handleCommand(message, address) {
 
   const searchNotes = text.match(/search my notes for\s+(.+)/i);
   if (searchNotes) {
-    const notes = listNotes(searchNotes[1]);
+    const notes = await listNotes(searchNotes[1]);
     return {
       command: 'notes:search',
       payload: notes,
@@ -393,7 +438,7 @@ async function handleCommand(message, address) {
 
   const append = text.match(/add to my\s+(.+?)\s+note:?\s+(.+)/i);
   if (append) {
-    const note = appendToNote(append[1], append[2]);
+    const note = await appendToNote(append[1], append[2]);
     return {
       command: 'notes:append',
       payload: note,
