@@ -173,6 +173,12 @@ export function useJarvis() {
       return;
     }
 
+    if (looksLikeFragmentedSpeech(text)) {
+      lastLocalIntentRef.current = { text: normalized, at: now };
+      await sendMessage(text, { appendUser: false });
+      return;
+    }
+
     if (shouldUseDesktopIntent(text)) {
       lastLocalIntentRef.current = { text: normalized, at: now };
       await sendMessage(text, { appendUser: false });
@@ -355,6 +361,14 @@ function repairFragmentedCommandWords(text) {
     const pattern = new RegExp(`\\b${word.split('').join('\\s*')}\\b`, 'gi');
     return current.replace(pattern, word);
   }, String(text || ''));
+}
+
+function looksLikeFragmentedSpeech(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  const singleLetterSplits = value.match(/\b(?:[a-z]\s+){1,}[a-z]{1,2}\b/gi) || [];
+  const suspiciousWords = value.match(/\b[a-z]{1,2}\s+[a-z]{1,3}\b/gi) || [];
+  return singleLetterSplits.length > 0 || suspiciousWords.length >= 2;
 }
 
 function normalizeMultilingualCommand(text) {

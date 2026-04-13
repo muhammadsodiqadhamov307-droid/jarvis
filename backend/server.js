@@ -5,7 +5,7 @@ import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { attachGeminiLiveProxy, geminiText, geminiTextStream, geminiTts } from './gemini.js';
+import { attachGeminiLiveProxy, geminiRepairTranscript, geminiText, geminiTextStream, geminiTts } from './gemini.js';
 import { elevenLabsTts } from './elevenlabs.js';
 import {
   addExchange,
@@ -442,7 +442,7 @@ initDatabase()
   });
 
 async function handleCommand(message, address) {
-  const text = normalizeSpokenCommand(message.trim());
+  const text = await normalizeIncomingCommand(message);
 
   if (isSearchRequest(text)) {
     return handleSearchCommand(stripSearchTrigger(text), text, address);
@@ -546,6 +546,18 @@ async function handleCommand(message, address) {
   if (nlpResult?.reply) return nlpResult;
 
   return {};
+}
+
+async function normalizeIncomingCommand(message) {
+  const normalized = normalizeSpokenCommand(String(message || '').trim());
+  if (!looksLikeFragmentedSpeech(normalized)) return normalized;
+  try {
+    const repaired = normalizeSpokenCommand(await geminiRepairTranscript(normalized));
+    return repaired || normalized;
+  } catch (error) {
+    console.warn(`Transcript repair unavailable: ${error.message}`);
+    return normalized;
+  }
 }
 
 async function handleNlpIntent(text, address) {
@@ -744,6 +756,14 @@ function repairFragmentedCommandWords(text) {
     const pattern = new RegExp(`\\b${word.split('').join('\\s*')}\\b`, 'gi');
     return current.replace(pattern, word);
   }, String(text || ''));
+}
+
+function looksLikeFragmentedSpeech(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  const singleLetterSplits = value.match(/\b(?:[a-z]\s+){1,}[a-z]{1,2}\b/gi) || [];
+  const suspiciousWords = value.match(/\b[a-z]{1,2}\s+[a-z]{1,3}\b/gi) || [];
+  return singleLetterSplits.length > 0 || suspiciousWords.length >= 2;
 }
 
 function normalizeMultilingualCommand(text) {

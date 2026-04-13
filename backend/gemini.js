@@ -195,6 +195,44 @@ export async function geminiText(prompt, address = 'Sir') {
   return data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim() || null;
 }
 
+export async function geminiRepairTranscript(transcript) {
+  if (!process.env.GEMINI_API_KEY) return String(transcript || '').trim();
+  const input = String(transcript || '').trim();
+  if (!input) return input;
+
+  const model = process.env.GEMINI_REPAIR_MODEL || process.env.GEMINI_INTENT_MODEL || 'gemini-flash-lite-latest';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: 'user',
+          parts: [{
+            text: [
+              'Repair this speech transcript.',
+              'Only fix accidental spaces split inside words, light ASR breakage, and obvious letter fragmentation.',
+              'Do not add new intent or facts.',
+              'Keep the same language as the user.',
+              'Return only the corrected sentence, with no quotes or explanation.',
+              `Transcript: ${JSON.stringify(input)}`
+            ].join('\n')
+          }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 120
+      }
+    })
+  });
+
+  if (!response.ok) throw new Error(`Gemini repair request failed: ${response.status}`);
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim() || input;
+}
+
 export async function* geminiTextStream(prompt, address = 'Sir') {
   if (!process.env.GEMINI_API_KEY) return;
   const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
