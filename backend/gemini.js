@@ -2,7 +2,6 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { buildSystemPrompt } from './memory.js';
 
 const DEFAULT_LIVE_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
-const DEFAULT_LANGUAGE = 'English';
 
 export function attachGeminiLiveProxy(server) {
   const wss = new WebSocketServer({ server, path: '/ws/gemini-live' });
@@ -152,14 +151,17 @@ async function buildLiveSystemPrompt(address) {
   return `${await buildSystemPrompt(address)}
 
 Live voice policy:
-- The user is speaking English. Treat ambiguous, noisy, or accent-heavy speech as English.
-- Never switch to another language or another writing system.
-- If transcription appears to contain non-English words, first infer the closest likely English phrase.
-- If the phrase is still unclear, ask for clarification in English only.
+- The user may speak English, Uzbek, or Russian. Listen for all three naturally.
+- Reply in the same language the user used most recently: English to English, Uzbek to Uzbek, Russian to Russian.
+- Uzbek may arrive in Latin script or Cyrillic script. Preserve the user's style when practical.
+- Russian should be answered in natural Russian Cyrillic.
+- If the user's language is mixed, answer in the language that carries the main request.
+- If the phrase is unclear, ask for clarification in the same likely language.
+- Keep the JARVIS personality in every language: formal, precise, loyal, subtly witty, and concise.
 - Do not claim that you opened, closed, launched, played, paused, or controlled local computer apps. A separate local desktop controller handles those actions and will confirm them.
 - For weather, news, latest, current, search, online, or internet questions, do not guess from memory. Briefly acknowledge that you are checking; a separate verified web-search response may be provided.
-- Short greetings such as "Jarvis", "hi Jarvis", and "are you there" are valid commands and should receive a brief acknowledgement.
-- Keep responses in polished ${DEFAULT_LANGUAGE} with a refined British tone.`;
+- Short greetings such as "Jarvis", "hi Jarvis", "salom Jarvis", and "privet Jarvis" are valid commands and should receive a brief acknowledgement.
+- Address the user as "${address}" unless the user asks for a different address.`;
 }
 
 export async function geminiText(prompt, address = 'Sir') {

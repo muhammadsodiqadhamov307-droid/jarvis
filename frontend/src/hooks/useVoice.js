@@ -302,7 +302,7 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
     monitoringRef.current = true;
     setMonitoring(true);
     beginMetering();
-    if (LIVE_AUDIO_ENABLED && !SpeechRecognition) {
+    if (LIVE_AUDIO_ENABLED) {
       callbacksRef.current.onSpeechStart?.();
       return;
     }
@@ -674,8 +674,8 @@ function handleLiveTranscripts(payload, callbacks = {}, assistantAudioBlockUntil
   const input = server.inputTranscription || server.input_transcription || payload.inputTranscription || payload.input_transcription;
   const output = server.outputTranscription || server.output_transcription || payload.outputTranscription || payload.output_transcription;
 
-  const inputText = cleanEnglishTranscript(input?.text);
-  const outputText = cleanEnglishTranscript(output?.text);
+  const inputText = cleanMultilingualTranscript(input?.text);
+  const outputText = cleanMultilingualTranscript(output?.text);
 
   if (inputText && Date.now() >= (assistantAudioBlockUntilRef?.current || 0)) {
     callbacks.onLiveTranscript?.('user', inputText);
@@ -683,7 +683,7 @@ function handleLiveTranscripts(payload, callbacks = {}, assistantAudioBlockUntil
   if (outputText) callbacks.onLiveTranscript?.('assistant', outputText);
 }
 
-function cleanEnglishTranscript(text) {
+function cleanMultilingualTranscript(text) {
   const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return '';
 
@@ -691,8 +691,9 @@ function cleanEnglishTranscript(text) {
   if (!letters.length) return cleaned;
 
   const latinLetters = cleaned.match(/\p{Script=Latin}/gu) || [];
-  const latinRatio = latinLetters.length / letters.length;
-  if (latinRatio < 0.8) return '';
+  const cyrillicLetters = cleaned.match(/\p{Script=Cyrillic}/gu) || [];
+  const supportedRatio = (latinLetters.length + cyrillicLetters.length) / letters.length;
+  if (supportedRatio < 0.75) return '';
 
   return cleaned;
 }
