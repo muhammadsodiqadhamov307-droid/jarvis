@@ -779,7 +779,7 @@ function isLikelyControllerIntent(text) {
 }
 
 function normalizeControllerText(text) {
-  return String(text || '')
+  return repairFragmentedControllerWords(String(text || ''))
     .toLowerCase()
     .replace(/\bo\s+pen\b/g, 'open')
     .replace(/\bopn\b/g, 'open')
@@ -792,4 +792,19 @@ function normalizeControllerText(text) {
     .replace(/\bcom\s+puter(?:s)?\b/g, 'computer')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function repairFragmentedControllerWords(text) {
+  const replacements = [
+    'open', 'close', 'play', 'pause', 'resume', 'stop', 'skip', 'next', 'previous',
+    'google', 'weather', 'information', 'search', 'latest', 'current', 'news',
+    'forecast', 'temperature', 'default', 'device', 'devices', 'computer', 'computers',
+    'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
+    'message', 'connected', 'online', 'offline', 'name', 'names'
+  ];
+
+  return replacements.reduce((current, word) => {
+    const pattern = new RegExp(`\\b${word.split('').join('\\s*')}\\b`, 'gi');
+    return current.replace(pattern, word);
+  }, String(text || ''));
 }

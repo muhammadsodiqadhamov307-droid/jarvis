@@ -83,8 +83,7 @@ function buildIntentPrompt(message, devices, address) {
   const deviceSummary = devices.map((device) => ({
     name: device.name,
     status: device.status,
-    isDefault: Boolean(device.is_default),
-    hostname: device.metadata?.hostname || ''
+    isDefault: Boolean(device.is_default)
   }));
 
   return `You are the intent parser for a JARVIS computer-control assistant.
@@ -115,6 +114,8 @@ Important:
 - If the user wants to message/text/chat/contact someone and does not name another messaging app, normalize to "open telegram".
 - If the user asks for fresh/current/latest information, classify as web_search even when the speech transcript is messy.
 - If the user asks what devices are connected or whether a computer is online, classify as device_status.
+- If the user asks for the name of their computer or device, classify as device_status.
+- Use the current device display name from the "name" field when choosing or naming a device. Do not prefer hostnames over display names.
 
 Return this JSON shape:
 {

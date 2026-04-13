@@ -314,7 +314,7 @@ function shouldUseDesktopIntent(text) {
 function shouldUseDeviceStatusIntent(text) {
   const lower = String(text || '').toLowerCase();
   const mentionsDevices = /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|agent|agents|machine|machines)\b/i.test(lower);
-  const asksStatus = /\b(connected|linked|available|online|offline|status|see|detect|detected|reachable|running|active|alive|working|registered)\b/i.test(lower);
+  const asksStatus = /\b(connected|linked|available|online|offline|status|see|detect|detected|reachable|running|active|alive|working|registered|name|names|called)\b/i.test(lower);
   const asksList = /\b(show|list|what|which|any|how many|do you see|can you see)\b/i.test(lower);
   return mentionsDevices && (asksStatus || asksList);
 }
@@ -325,7 +325,7 @@ function shouldUseTextSearchIntent(text) {
 }
 
 function normalizeSpokenCommand(text) {
-  return normalizeMultilingualCommand(String(text || ''))
+  return repairFragmentedCommandWords(normalizeMultilingualCommand(String(text || '')))
     .replace(/\bo\s+pen\b/gi, 'open')
     .replace(/\bte\s+le\s*gram\b/gi, 'telegram')
     .replace(/\byou\s+tube\b/gi, 'youtube')
@@ -340,6 +340,21 @@ function normalizeSpokenCommand(text) {
     .replace(/\bcon\s+nect(?:ed|s|ing)?\b/gi, (match) => match.toLowerCase().includes('ed') ? 'connected' : 'connect')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function repairFragmentedCommandWords(text) {
+  const replacements = [
+    'open', 'close', 'play', 'pause', 'resume', 'stop', 'skip', 'next', 'previous',
+    'google', 'weather', 'information', 'search', 'latest', 'current', 'news',
+    'forecast', 'temperature', 'default', 'device', 'devices', 'computer', 'computers',
+    'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
+    'message', 'connected', 'online', 'offline', 'name', 'names'
+  ];
+
+  return replacements.reduce((current, word) => {
+    const pattern = new RegExp(`\\b${word.split('').join('\\s*')}\\b`, 'gi');
+    return current.replace(pattern, word);
+  }, String(text || ''));
 }
 
 function normalizeMultilingualCommand(text) {

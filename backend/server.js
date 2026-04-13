@@ -608,10 +608,11 @@ async function handleDeviceStatusCommand(text, address, meta = {}) {
   const devices = await listDevices();
   const selected = chooseRemoteDevice(text, devices, { allowDefault: false });
   const relevantDevices = selected ? [selected] : devices;
+  const nameReply = buildDeviceNameReply(text, relevantDevices, address, Boolean(selected));
   return {
     command: meta.source === 'nlp' ? 'devices:nlp-status' : 'devices:status',
     payload: { devices: relevantDevices, intent: meta.intent || null },
-    reply: buildDeviceStatusReply(relevantDevices, address, Boolean(selected))
+    reply: nameReply || buildDeviceStatusReply(relevantDevices, address, Boolean(selected))
   };
 }
 
@@ -713,7 +714,7 @@ function tryMath(text) {
 }
 
 function normalizeSpokenCommand(text) {
-  return normalizeMultilingualCommand(String(text || ''))
+  return repairFragmentedCommandWords(normalizeMultilingualCommand(String(text || '')))
     .replace(/\bo\s+pen\b/gi, 'open')
     .replace(/\bte\s+le\s*gram\b/gi, 'telegram')
     .replace(/\byou\s+tube\b/gi, 'youtube')
@@ -728,6 +729,21 @@ function normalizeSpokenCommand(text) {
     .replace(/\bcon\s+nect(?:ed|s|ing)?\b/gi, (match) => match.toLowerCase().includes('ed') ? 'connected' : 'connect')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function repairFragmentedCommandWords(text) {
+  const replacements = [
+    'open', 'close', 'play', 'pause', 'resume', 'stop', 'skip', 'next', 'previous',
+    'google', 'weather', 'information', 'search', 'latest', 'current', 'news',
+    'forecast', 'temperature', 'default', 'device', 'devices', 'computer', 'computers',
+    'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
+    'message', 'connected', 'online', 'offline', 'name', 'names'
+  ];
+
+  return replacements.reduce((current, word) => {
+    const pattern = new RegExp(`\\b${word.split('').join('\\s*')}\\b`, 'gi');
+    return current.replace(pattern, word);
+  }, String(text || ''));
 }
 
 function normalizeMultilingualCommand(text) {
@@ -784,7 +800,7 @@ function isSearchRequest(message) {
 function isDeviceStatusRequest(message) {
   const lower = String(message || '').toLowerCase();
   const mentionsDevices = /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|agent|agents|machine|machines)\b/i.test(lower);
-  const asksStatus = /\b(connected|linked|available|online|offline|status|see|detect|detected|reachable|running|active|alive|working|registered)\b/i.test(lower);
+  const asksStatus = /\b(connected|linked|available|online|offline|status|see|detect|detected|reachable|running|active|alive|working|registered|name|names|called)\b/i.test(lower);
   const asksList = /\b(show|list|what|which|any|how many|do you see|can you see)\b/i.test(lower);
   return mentionsDevices && (asksStatus || asksList);
 }
@@ -807,6 +823,20 @@ function buildDeviceStatusReply(devices, address = 'Sir', specific = false) {
 
   const extra = devices.length > summaries.length ? ` I see ${devices.length - summaries.length} more beyond that.` : '';
   return `I see ${devices.length} registered computer${devices.length === 1 ? '' : 's'}, ${address}: ${summaries.join('; ')}.${extra}`;
+}
+
+function buildDeviceNameReply(message, devices, address = 'Sir', specific = false) {
+  if (!isDeviceNameRequest(message) || !devices.length) return null;
+  if (specific || devices.length === 1) {
+    return `The device name is ${devices[0].name}, ${address}.`;
+  }
+  return `The registered device names are ${devices.map((device) => device.name).join(', ')}, ${address}.`;
+}
+
+function isDeviceNameRequest(message) {
+  const lower = String(message || '').toLowerCase();
+  return /\b(name|names|called|call it)\b/i.test(lower)
+    && /\b(device|devices|computer|computers|pc|laptop|machine)\b/i.test(lower);
 }
 
 async function waitForCommandCompletion(commandId, timeoutMs = 9000) {
