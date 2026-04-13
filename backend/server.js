@@ -24,6 +24,7 @@ import { getStartupStatus, setStartupEnabled } from './startup.js';
 import { dbProvider, initDatabase } from './db.js';
 import {
   approveDevice,
+  getCommand,
   heartbeatDevice,
   listCommands,
   listDevices,
@@ -473,6 +474,17 @@ async function handleCommand(message, address) {
     };
   }
 
+  if (isDeviceStatusRequest(text)) {
+    const devices = await listDevices();
+    const selected = chooseRemoteDevice(text, devices, { allowDefault: false });
+    const relevantDevices = selected ? [selected] : devices;
+    return {
+      command: 'devices:status',
+      payload: relevantDevices,
+      reply: buildDeviceStatusReply(relevantDevices, address, Boolean(selected))
+    };
+  }
+
   const desktopIntent = resolveDesktopIntent(text);
   if (desktopIntent) {
     if (os.platform() !== 'win32') {
@@ -491,11 +503,34 @@ async function handleCommand(message, address) {
           reply: `Which computer shall I use, ${address}? I see ${devices.map((device) => device.name).join(', ')}. Set one as default in Devices and I shall stop asking obvious questions.`
         };
       }
+      const reachability = getDeviceReachability(targetDevice);
+      if (!reachability.online) {
+        return {
+          command: 'desktop:remote-offline',
+          payload: { device: targetDevice, reachability },
+          reply: `${targetDevice.name} is not reachable at the moment, ${address}. It is ${reachability.label}. I will not pretend to control a sleeping machine.`
+        };
+      }
       const queued = await queueCommand(targetDevice.id, 'desktop_intent', { message: text });
+      const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
+      if (completed?.status === 'success') {
+        return {
+          command: 'desktop:remote-success',
+          payload: { device: targetDevice, queued, completed },
+          reply: `Done on ${targetDevice.name}, ${address}.`
+        };
+      }
+      if (completed?.status === 'error') {
+        return {
+          command: 'desktop:remote-error',
+          payload: { device: targetDevice, queued, completed },
+          reply: `I could not complete that on ${targetDevice.name}, ${address}: ${completed.error || 'the agent reported an unspecified fault'}.`
+        };
+      }
       return {
         command: 'desktop:remote-queued',
         payload: { device: targetDevice, queued },
-        reply: `Command sent to ${targetDevice.name}, ${address}. I shall await its report with dignified impatience.`
+        reply: `Command sent to ${targetDevice.name}, ${address}. I have not received the final report yet, which is inconvenient but not fatal.`
       };
     }
     const result = await executeDesktopIntent(desktopIntent);
@@ -635,6 +670,57 @@ function isSearchRequest(message) {
     || /\b(latest|news|weather|forecast|temperature|current|today|online|internet|what happened)\b/i.test(message);
 }
 
+function isDeviceStatusRequest(message) {
+  const lower = String(message || '').toLowerCase();
+  const mentionsDevices = /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|agent|agents|machine|machines)\b/i.test(lower);
+  const asksStatus = /\b(connected|linked|available|online|offline|status|see|detect|detected|reachable|running|active|alive|working|registered)\b/i.test(lower);
+  const asksList = /\b(show|list|what|which|any|how many|do you see|can you see)\b/i.test(lower);
+  return mentionsDevices && (asksStatus || asksList);
+}
+
+function buildDeviceStatusReply(devices, address = 'Sir', specific = false) {
+  if (!devices.length) {
+    return `I do not see any registered computers yet, ${address}. Install the Computer Agent and I shall begin keeping a proper inventory.`;
+  }
+
+  const summaries = devices.slice(0, 5).map((device) => {
+    const reachability = getDeviceReachability(device);
+    const defaultText = device.is_default ? 'default, ' : '';
+    const commandsText = device.active_commands ? `, ${device.active_commands} active command${device.active_commands === 1 ? '' : 's'}` : '';
+    return `${device.name}: ${defaultText}${device.status}, ${reachability.label}${commandsText}`;
+  });
+
+  if (specific) {
+    return `${summaries[0]}, ${address}.`;
+  }
+
+  const extra = devices.length > summaries.length ? ` I see ${devices.length - summaries.length} more beyond that.` : '';
+  return `I see ${devices.length} registered computer${devices.length === 1 ? '' : 's'}, ${address}: ${summaries.join('; ')}.${extra}`;
+}
+
+async function waitForCommandCompletion(commandId, timeoutMs = 9000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const command = await getCommand(commandId);
+    if (command && ['success', 'error', 'cancelled'].includes(command.status)) return command;
+    await wait(350);
+  }
+  return null;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getDeviceReachability(device) {
+  if (!device.last_seen_at) return { online: false, label: 'not yet seen' };
+  const ageMs = Date.now() - new Date(device.last_seen_at).getTime();
+  if (!Number.isFinite(ageMs)) return { online: false, label: 'last seen time unknown' };
+  if (ageMs <= 90_000) return { online: true, label: 'online' };
+  const minutes = Math.max(1, Math.round(ageMs / 60000));
+  return { online: false, label: `last seen ${minutes} minute${minutes === 1 ? '' : 's'} ago` };
+}
+
 function securityHeaders(_req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -657,7 +743,7 @@ function securityHeaders(_req, res, next) {
   next();
 }
 
-function chooseRemoteDevice(text, devices) {
+function chooseRemoteDevice(text, devices, { allowDefault = true } = {}) {
   if (devices.length === 1) return devices[0];
   const normalized = normalizeDeviceText(text);
   const namedDevice = devices.find((device) => {
@@ -672,7 +758,7 @@ function chooseRemoteDevice(text, devices) {
     });
   });
   if (namedDevice) return namedDevice;
-  return devices.find((device) => device.is_default) || null;
+  return allowDefault ? devices.find((device) => device.is_default) || null : null;
 }
 
 function normalizeDeviceText(text) {

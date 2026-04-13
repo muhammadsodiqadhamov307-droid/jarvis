@@ -175,26 +175,13 @@ export function useJarvis() {
 
     if (shouldUseDesktopIntent(text)) {
       lastLocalIntentRef.current = { text: normalized, at: now };
-      await executeDesktopIntent(text);
+      await sendMessage(text, { appendUser: false });
+      return;
     }
-  }
 
-  async function executeDesktopIntent(text) {
-    setStatus('THINKING');
-    try {
-      const response = await fetch(`${API_URL}/api/desktop/intent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, address })
-      });
-      const payload = await response.json();
-      if (payload.handled && payload.reply) {
-        appendMessage('assistant', payload.reply);
-      }
-      setStatus('LISTENING');
-    } catch (error) {
-      appendMessage('assistant', `Desktop control fault, ${address}: ${error.message}.`);
-      setStatus('ERROR');
+    if (shouldUseDeviceStatusIntent(text)) {
+      lastLocalIntentRef.current = { text: normalized, at: now };
+      await sendMessage(text, { appendUser: false });
     }
   }
 
@@ -260,6 +247,9 @@ export function useJarvis() {
         setSearchResults(meta.payload);
         voice.sendLiveText?.(`Read this verified web result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
       }
+      if (reply && (meta?.command?.startsWith('desktop') || meta?.command?.startsWith('devices'))) {
+        voice.sendLiveText?.(`Report this completed controller result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
+      }
     } catch (error) {
       const reply = `A fault has occurred, ${address}: ${error.message}. I remain composed, naturally.`;
       appendMessage('assistant', reply);
@@ -317,6 +307,14 @@ function shouldUseDesktopIntent(text) {
     /\b(play|pause|resume|stop|skip|next|previous|mute|unmute|volume up|volume down|louder|quieter)\b.*\b(music|song|audio|video|media)\b/.test(lower) ||
     /\b(i need|bring up|pull up|show me|open|close|quit|exit)\b/.test(lower) && /\b(app|browser|telegram|youtube|google|music|chrome)\b/.test(lower)
   );
+}
+
+function shouldUseDeviceStatusIntent(text) {
+  const lower = String(text || '').toLowerCase();
+  const mentionsDevices = /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|agent|agents|machine|machines)\b/i.test(lower);
+  const asksStatus = /\b(connected|linked|available|online|offline|status|see|detect|detected|reachable|running|active|alive|working|registered)\b/i.test(lower);
+  const asksList = /\b(show|list|what|which|any|how many|do you see|can you see)\b/i.test(lower);
+  return mentionsDevices && (asksStatus || asksList);
 }
 
 function shouldUseTextSearchIntent(text) {

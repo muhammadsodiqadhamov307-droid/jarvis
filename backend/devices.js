@@ -183,6 +183,11 @@ export async function updateCommandStatus({ deviceKey, deviceSecret, commandId, 
   return updated.rows[0] ? hydrateCommand(updated.rows[0]) : null;
 }
 
+export async function getCommand(commandId) {
+  const result = await query('SELECT * FROM commands WHERE id = $1', [commandId]);
+  return result.rows[0] ? hydrateCommand(result.rows[0]) : null;
+}
+
 export async function listCommands(deviceId) {
   const result = await query(`
     SELECT * FROM commands
