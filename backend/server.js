@@ -900,13 +900,6 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
     };
   }
 
-  if (!supportsStructuredRemote(device)) {
-    return {
-      type: 'desktop_intent',
-      payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
-    };
-  }
-
   if (desktopIntent.action === 'open_url') {
     return {
       type: 'open_url',
@@ -919,6 +912,12 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
   }
 
   if (desktopIntent.action === 'close_url') {
+    if (!supportsStructuredRemote(device)) {
+      return {
+        type: 'desktop_intent',
+        payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+      };
+    }
     return {
       type: 'close_url',
       payload: {

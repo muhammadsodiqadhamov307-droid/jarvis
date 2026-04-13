@@ -225,6 +225,14 @@ function resolveWebsiteIntent(lower, original) {
     };
   }
 
+  if (isBareMusicRequest(lower)) {
+    return {
+      action: 'open_url',
+      label: 'YouTube music search',
+      url: 'https://www.youtube.com/results?search_query=music'
+    };
+  }
+
   const directPlay = resolveGeneralPlayIntent(lower, original);
   if (directPlay) return directPlay;
 
@@ -276,6 +284,14 @@ function resolveGeneralPlayIntent(lower, original) {
     label: 'YouTube',
     url: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanMusicQuery(query) || query)}`
   };
+}
+
+function isBareMusicRequest(lower) {
+  if (!/\b(music|song|songs|audio)\b/i.test(lower)) return false;
+  if (/\b(close|quit|exit|pause|resume|stop|skip|next|previous|volume|mute|unmute|weather|news|latest|search|google)\b/i.test(lower)) return false;
+  return hasDeviceTargetCue(lower)
+    || /\b(jarvis|please|could you|can you|would you)\b/i.test(lower)
+    || /^(music|song|songs|audio)\b/i.test(lower);
 }
 
 function resolveAppIntent(lower, original = '') {
