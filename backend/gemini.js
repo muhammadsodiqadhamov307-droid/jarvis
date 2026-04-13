@@ -202,9 +202,13 @@ export async function geminiRepairTranscript(transcript) {
 
   const model = process.env.GEMINI_REPAIR_MODEL || process.env.GEMINI_INTENT_MODEL || 'gemini-flash-lite-latest';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.GEMINI_REPAIR_TIMEOUT_MS || 1800);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    signal: controller.signal,
     body: JSON.stringify({
       contents: [
         {
@@ -236,7 +240,7 @@ export async function geminiRepairTranscript(transcript) {
         maxOutputTokens: 120
       }
     })
-  });
+  }).finally(() => clearTimeout(timer));
 
   if (!response.ok) throw new Error(`Gemini repair request failed: ${response.status}`);
   const data = await response.json();

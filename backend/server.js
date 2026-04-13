@@ -727,7 +727,7 @@ async function handleDesktopCommand(text, desktopIntent, address, meta = {}, tar
         reply: `Which computer shall I use, ${address}? I see ${devices.map((device) => device.name).join(', ')}. Set one as default in Devices and I shall stop asking obvious questions.`
       };
     }
-    const executions = await Promise.all(targets.map((device) => executeRemoteDesktopCommand(device, text, meta)));
+    const executions = await Promise.all(targets.map((device) => executeRemoteDesktopCommand(device, text, desktopIntent, meta)));
     const summary = summarizeRemoteExecutions(executions, address);
     return {
       command: summary.command,
@@ -870,7 +870,7 @@ function isBothDevicesRequest(text) {
     && /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|machine|machines|kompyuter|компьютер)\b/i.test(String(text || ''));
 }
 
-async function executeRemoteDesktopCommand(device, text, meta) {
+async function executeRemoteDesktopCommand(device, text, desktopIntent, meta) {
   const reachability = getDeviceReachability(device);
   if (!reachability.online) {
     return {
@@ -880,7 +880,8 @@ async function executeRemoteDesktopCommand(device, text, meta) {
     };
   }
 
-  const queued = await queueCommand(device.id, 'desktop_intent', { message: text, intent: meta.intent || null });
+  const command = buildRemoteCommand(device, desktopIntent, text, meta);
+  const queued = await queueCommand(device.id, command.type, command.payload);
   const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
   return {
     status: completed?.status || 'queued',
@@ -889,6 +890,104 @@ async function executeRemoteDesktopCommand(device, text, meta) {
     completed,
     reachability
   };
+}
+
+function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
+  if (!desktopIntent || !desktopIntent.action) {
+    return {
+      type: 'desktop_intent',
+      payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+    };
+  }
+
+  if (!supportsStructuredRemote(device)) {
+    return {
+      type: 'desktop_intent',
+      payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+    };
+  }
+
+  if (desktopIntent.action === 'open_url') {
+    return {
+      type: 'open_url',
+      payload: {
+        url: desktopIntent.url,
+        label: desktopIntent.label,
+        intent: meta.intent || null
+      }
+    };
+  }
+
+  if (desktopIntent.action === 'close_url') {
+    return {
+      type: 'close_url',
+      payload: {
+        label: desktopIntent.label,
+        intent: meta.intent || null
+      }
+    };
+  }
+
+  if (desktopIntent.action === 'open_app') {
+    return {
+      type: 'open_app',
+      payload: {
+        app: desktopIntent.app,
+        label: desktopIntent.label,
+        appName: desktopIntent.appName,
+        intent: meta.intent || null
+      }
+    };
+  }
+
+  if (desktopIntent.action === 'close_app') {
+    return {
+      type: 'close_app',
+      payload: {
+        app: desktopIntent.app,
+        label: desktopIntent.label,
+        appName: desktopIntent.appName,
+        intent: meta.intent || null
+      }
+    };
+  }
+
+  if (desktopIntent.action === 'media_key') {
+    return {
+      type: 'media_key',
+      payload: {
+        key: desktopIntent.key,
+        label: desktopIntent.label,
+        intent: meta.intent || null
+      }
+    };
+  }
+
+  return {
+    type: 'desktop_intent',
+    payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+  };
+}
+
+function supportsStructuredRemote(device) {
+  const version = String(device?.metadata?.agentVersion || '').trim();
+  if (!version) return false;
+  return compareVersions(version, '0.2.0') >= 0;
+}
+
+function compareVersions(left, right) {
+  const parse = (value) => String(value || '0')
+    .split('.')
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0));
+  const a = parse(left);
+  const b = parse(right);
+  const length = Math.max(a.length, b.length);
+  for (let i = 0; i < length; i += 1) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 function summarizeRemoteExecutions(executions, address) {
@@ -1148,7 +1247,8 @@ function getDeviceReachability(device) {
   if (!device.last_seen_at) return { online: false, label: 'not yet seen' };
   const ageMs = Date.now() - new Date(device.last_seen_at).getTime();
   if (!Number.isFinite(ageMs)) return { online: false, label: 'last seen time unknown' };
-  if (ageMs <= 90_000) return { online: true, label: 'online' };
+  const onlineWindowMs = Number(process.env.DEVICE_ONLINE_WINDOW_MS || 180000);
+  if (ageMs <= onlineWindowMs) return { online: true, label: 'online' };
   const minutes = Math.max(1, Math.round(ageMs / 60000));
   return { online: false, label: `last seen ${minutes} minute${minutes === 1 ? '' : 's'} ago` };
 }

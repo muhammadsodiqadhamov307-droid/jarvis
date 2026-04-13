@@ -96,6 +96,13 @@ async function runAllowedCommand(command) {
     });
   }
 
+  if (command.type === 'close_url') {
+    return executeDesktopIntent({
+      action: 'close_url',
+      label: payload.label || payload.url || 'Website'
+    });
+  }
+
   if (command.type === 'open_app') {
     return executeDesktopIntent({
       action: 'open_app',
@@ -208,7 +215,7 @@ function getMetadata() {
     username: os.userInfo().username,
     arch: os.arch(),
     uptimeSeconds: Math.round(os.uptime()),
-    agentVersion: '0.1.0'
+    agentVersion: '0.2.0'
   };
 }
 

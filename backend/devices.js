@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { query, nowIso } from './db.js';
 
 const COMMAND_STATUSES = new Set(['queued', 'sent', 'running', 'success', 'error', 'cancelled']);
-const COMMAND_TYPES = new Set(['desktop_intent', 'open_url', 'open_app', 'close_app', 'media_key']);
+const COMMAND_TYPES = new Set(['desktop_intent', 'open_url', 'open_app', 'close_app', 'close_url', 'media_key']);
 
 export async function registerDevice({ deviceKey, deviceSecret, name, platform, metadata = {} }) {
   const key = cleanRequired(deviceKey, 'deviceKey');
@@ -204,7 +204,8 @@ async function authenticateDevice(deviceKey, deviceSecret) {
   const device = await findDeviceByKey(key);
   if (!device) throw Object.assign(new Error('Device is not registered.'), { status: 401 });
   assertSecret(device, secret);
-  return device;
+  await touchDeviceSeen(device.id);
+  return { ...device, last_seen_at: nowIso() };
 }
 
 async function findDeviceByKey(deviceKey) {
@@ -247,6 +248,10 @@ function cleanName(value, fallback) {
 
 async function clearDefaultDevices() {
   await query('UPDATE devices SET is_default = false, updated_at = $1 WHERE is_default = true', [nowIso()]);
+}
+
+async function touchDeviceSeen(deviceId) {
+  await query('UPDATE devices SET last_seen_at = $1 WHERE id = $2', [nowIso(), deviceId]);
 }
 
 function hydrateDevice(row, { includeSecret = false } = {}) {
