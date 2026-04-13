@@ -24,6 +24,7 @@ export function useJarvis() {
   const liveTranscriptRef = useRef({ userId: null, userText: '', assistantId: null, assistantText: '' });
   const lastLocalIntentRef = useRef({ text: '', at: 0 });
   const liveIntentTimerRef = useRef(null);
+  const pendingLiveIntentRef = useRef('');
 
   const appendMessage = useCallback((role, content) => {
     const id = makeId();
@@ -57,15 +58,17 @@ export function useJarvis() {
         transcript.userText = `${transcript.userText} ${cleaned}`.trim();
         updateMessage(transcript.userId, transcript.userText);
       }
+      pendingLiveIntentRef.current = transcript.userText;
       clearTimeout(liveIntentTimerRef.current);
+      const snapshot = transcript.userText;
       liveIntentTimerRef.current = window.setTimeout(() => {
-        handleLiveFinalText(liveTranscriptRef.current.userText);
+        const textToHandle = pendingLiveIntentRef.current || snapshot;
+        pendingLiveIntentRef.current = '';
+        handleLiveFinalText(textToHandle);
       }, 1400);
       return;
     }
 
-    transcript.userId = null;
-    transcript.userText = '';
     if (!transcript.assistantId) {
       transcript.assistantId = appendMessage('assistant', cleaned);
       transcript.assistantText = cleaned;
@@ -163,6 +166,8 @@ export function useJarvis() {
   async function handleLiveFinalText(raw) {
     const text = normalizeSpokenCommand(String(raw || '').trim());
     if (!text) return;
+    liveTranscriptRef.current.userId = null;
+    liveTranscriptRef.current.userText = '';
     const normalized = normalizeTranscript(text);
     const now = Date.now();
     if (lastLocalIntentRef.current.text === normalized && now - lastLocalIntentRef.current.at < 6000) return;
