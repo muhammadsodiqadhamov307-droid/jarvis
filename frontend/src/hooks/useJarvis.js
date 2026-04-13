@@ -161,7 +161,7 @@ export function useJarvis() {
   }, [address, appendMessage, voice]);
 
   async function handleLiveFinalText(raw) {
-    const text = String(raw || '').trim();
+    const text = normalizeSpokenCommand(String(raw || '').trim());
     if (!text) return;
     const normalized = normalizeTranscript(text);
     const now = Date.now();
@@ -304,6 +304,8 @@ function shouldUseDesktopIntent(text) {
     /\b(telegram|youtube|you tube|google|chrome|spotify|vs code|vscode|code editor|notepad|file explorer|explorer|files|folder|calculator|calc|word|excel|obs|obs studio)\b/.test(lower) ||
     /\b(open|launch|start|run|close|quit|exit)\s+(?:the\s+)?[a-z0-9 ._-]{2,}$/i.test(lower) ||
     /\b(i need|bring up|pull up)\s+(?:the\s+)?[a-z0-9 ._-]{2,}$/i.test(lower) ||
+    /\b(message|text|dm|chat|contact|send\s+(?:a\s+)?message|send\s+(?:a\s+)?text|write\s+to|talk\s+to)\b/i.test(lower) ||
+    /\b(play|put on)\s+.{2,}$/i.test(lower) ||
     /\b(play|pause|resume|stop|skip|next|previous|mute|unmute|volume up|volume down|louder|quieter)\b.*\b(music|song|audio|video|media)\b/.test(lower) ||
     /\b(i need|bring up|pull up|show me|open|close|quit|exit)\b/.test(lower) && /\b(app|browser|telegram|youtube|google|music|chrome)\b/.test(lower)
   );
@@ -320,6 +322,48 @@ function shouldUseDeviceStatusIntent(text) {
 function shouldUseTextSearchIntent(text) {
   const lower = String(text || '').toLowerCase();
   return /\b(latest|news|weather|forecast|temperature|current|today|search|web search|online|internet|look up|google this|find information|what happened)\b/.test(lower);
+}
+
+function normalizeSpokenCommand(text) {
+  return normalizeMultilingualCommand(String(text || ''))
+    .replace(/\bo\s+pen\b/gi, 'open')
+    .replace(/\bte\s+le\s*gram\b/gi, 'telegram')
+    .replace(/\byou\s+tube\b/gi, 'youtube')
+    .replace(/\bgoo\s+gle\b/gi, 'google')
+    .replace(/\bde\s+fault\b/gi, 'default')
+    .replace(/\bde\s+vice(?:s)?\b/gi, 'device')
+    .replace(/\bcom\s+puter(?:s)?\b/gi, 'computer')
+    .replace(/\bcon\s+nect(?:ed|s|ing)?\b/gi, (match) => match.toLowerCase().includes('ed') ? 'connected' : 'connect')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeMultilingualCommand(text) {
+  let value = String(text || '').replace(/\s+/g, ' ').trim();
+
+  value = value
+    .replace(/\b(telegram|telegramm|телеграм|телеграмм)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open telegram')
+    .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(telegram|telegramm|телеграм|телеграмм)\b/giu, 'open telegram')
+    .replace(/\b(telegram|telegramm|телеграм|телеграмм)(ni)?\s+(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat)\b/giu, 'close telegram')
+    .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat)\s+(telegram|telegramm|телеграм|телеграмм)\b/giu, 'close telegram')
+    .replace(/\b(youtube|you tube|yutub|ютуб)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open youtube')
+    .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(youtube|you tube|yutub|ютуб)\b/giu, 'open youtube')
+    .replace(/\b(google|гугл)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open google')
+    .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(google|гугл)\b/giu, 'open google')
+    .replace(/\b(xabar yoz|xabar yubor|yozib yubor|telegramdan yoz|sms yoz|sms yubor)\b/giu, 'message on telegram')
+    .replace(/\b(musiqa|qo['‘’`]?shiq|ashula)\s+(qo['‘’`]?y|yoq|ijro et)\b/giu, 'play music')
+    .replace(/\b(.{2,80}?)\s+(qo['‘’`]?y|ijro et)\b/giu, (_match, query) => `play ${query}`);
+
+  value = value
+    .replace(/(?:^|\s)(открой|запусти|включи)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' open telegram')
+    .replace(/(?:^|\s)(закрой|выключи|останови)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' close telegram')
+    .replace(/(?:^|\s)(открой|запусти|включи)\s+(ютуб|youtube)(?=\s|$)/giu, ' open youtube')
+    .replace(/(?:^|\s)(открой|запусти|включи)\s+(гугл|google)(?=\s|$)/giu, ' open google')
+    .replace(/(?:^|\s)(напиши|отправь)\s+(сообщение|смс|sms)(?=\s|$)/giu, ' message on telegram')
+    .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(музыку|песню)(?=\s|$)/giu, ' play music')
+    .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(.{2,80})/giu, (_match, _verb, query) => ` play ${query}`);
+
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 async function* readNdjson(stream) {

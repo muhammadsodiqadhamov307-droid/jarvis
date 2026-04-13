@@ -77,7 +77,7 @@ const MEDIA_KEYS = {
 };
 
 export function resolveDesktopIntent(raw) {
-  const text = String(raw || '').trim();
+  const text = normalizeMultilingualDesktopIntent(String(raw || '').trim());
   const lower = text.toLowerCase();
   if (!text) return null;
   if (isSearchLikeRequest(lower) && !isExplicitWeatherAppRequest(lower)) return null;
@@ -95,6 +95,34 @@ export function resolveDesktopIntent(raw) {
   if (generalApp) return generalApp;
 
   return null;
+}
+
+function normalizeMultilingualDesktopIntent(text) {
+  let value = String(text || '').replace(/\s+/g, ' ').trim();
+
+  value = value
+    .replace(/\b(telegram|telegramm|телеграм|телеграмм)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open telegram')
+    .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(telegram|telegramm|телеграм|телеграмм)\b/giu, 'open telegram')
+    .replace(/\b(telegram|telegramm|телеграм|телеграмм)(ni)?\s+(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat)\b/giu, 'close telegram')
+    .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat)\s+(telegram|telegramm|телеграм|телеграмм)\b/giu, 'close telegram')
+    .replace(/\b(youtube|you tube|yutub|ютуб)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open youtube')
+    .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(youtube|you tube|yutub|ютуб)\b/giu, 'open youtube')
+    .replace(/\b(google|гугл)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open google')
+    .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(google|гугл)\b/giu, 'open google')
+    .replace(/\b(xabar yoz|xabar yubor|yozib yubor|telegramdan yoz|sms yoz|sms yubor)\b/giu, 'message on telegram')
+    .replace(/\b(musiqa|qo['‘’`]?shiq|ashula)\s+(qo['‘’`]?y|yoq|ijro et)\b/giu, 'play music')
+    .replace(/\b(.{2,80}?)\s+(qo['‘’`]?y|ijro et)\b/giu, (_match, query) => `play ${query}`);
+
+  value = value
+    .replace(/(?:^|\s)(открой|запусти|включи)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' open telegram')
+    .replace(/(?:^|\s)(закрой|выключи|останови)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' close telegram')
+    .replace(/(?:^|\s)(открой|запусти|включи)\s+(ютуб|youtube)(?=\s|$)/giu, ' open youtube')
+    .replace(/(?:^|\s)(открой|запусти|включи)\s+(гугл|google)(?=\s|$)/giu, ' open google')
+    .replace(/(?:^|\s)(напиши|отправь)\s+(сообщение|смс|sms)(?=\s|$)/giu, ' message on telegram')
+    .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(музыку|песню)(?=\s|$)/giu, ' play music')
+    .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(.{2,80})/giu, (_match, _verb, query) => ` play ${query}`);
+
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 export async function executeDesktopIntent(intent) {
@@ -173,6 +201,9 @@ function resolveMediaIntent(lower) {
 }
 
 function resolveWebsiteIntent(lower, original) {
+  const directPlay = resolveGeneralPlayIntent(lower, original);
+  if (directPlay) return directPlay;
+
   if (/\b(play|put on)\b.*\b(music|song|songs?|lofi|lo-fi)\b/.test(lower)) {
     const query = cleanMusicQuery(extractSearchQuery(original, /(play|put on|music|song|songs?|on youtube|youtube)/i)) || 'music';
     return {
@@ -209,8 +240,26 @@ function resolveWebsiteIntent(lower, original) {
   return null;
 }
 
+function resolveGeneralPlayIntent(lower, original) {
+  if (!/\b(play|put on)\b/i.test(lower)) return null;
+  if (/\b(pause|resume|stop|skip|next|previous|volume|mute|unmute)\b/i.test(lower)) return null;
+  if (/\b(game|games|app|application|program)\b/i.test(lower)) return null;
+
+  const query = extractSearchQuery(original, /(play|put on|on youtube|youtube)/i);
+  if (!query || isBareOpenTarget(query, ['music', 'song', 'songs'])) return null;
+  return {
+    action: 'open_url',
+    label: 'YouTube',
+    url: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanMusicQuery(query) || query)}`
+  };
+}
+
 function resolveAppIntent(lower) {
   const action = /\b(close|quit|exit|kill)\b/.test(lower) ? 'close_app' : 'open_app';
+  if (action === 'open_app' && isMessagingIntent(lower)) {
+    const app = APP_ALIASES.telegram;
+    return { action, app: 'telegram', label: app.label };
+  }
   const appKey = Object.keys(APP_ALIASES).find((key) => {
     if (key === 'vscode') return /\b(vs code|vscode|code editor)\b/.test(lower);
     if (key === 'explorer') return /\b(file explorer|explorer|files|my files|folder|folders)\b/.test(lower);
@@ -227,6 +276,11 @@ function resolveAppIntent(lower) {
     return { action: 'open_url', app: appKey, label: app.label, url: app.url };
   }
   return { action, app: appKey, label: app.label };
+}
+
+function isMessagingIntent(lower) {
+  return /\b(message|text|dm|chat|contact|send\s+(?:a\s+)?message|send\s+(?:a\s+)?text|write\s+to|talk\s+to)\b/i.test(lower)
+    && !/\bemail|mail|gmail\b/i.test(lower);
 }
 
 function resolveGeneralAppIntent(original, lower) {
