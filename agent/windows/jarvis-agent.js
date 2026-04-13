@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import { executeDesktopIntent, resolveDesktopIntent } from '../../backend/desktop.js';
@@ -9,8 +9,10 @@ const POLL_INTERVAL_MS = Number(process.env.JARVIS_AGENT_POLL_MS || 3000);
 const HEARTBEAT_INTERVAL_MS = Number(process.env.JARVIS_AGENT_HEARTBEAT_MS || 30000);
 const configDir = path.join(process.env.APPDATA || os.homedir(), 'JarvisComputerAgent');
 const configPath = path.join(configDir, 'device.json');
+const logPath = path.join(configDir, 'agent.log');
 
 const serverUrl = normalizeServerUrl(getArgValue('--server') || process.env.JARVIS_SERVER_URL || DEFAULT_SERVER_URL);
+installFileLogger();
 const device = loadOrCreateDevice();
 
 console.log('JARVIS Windows Agent starting.');
@@ -21,6 +23,11 @@ console.log('This agent executes only allowlisted desktop commands after server 
 await register();
 setInterval(() => heartbeat().catch(reportLoopError), HEARTBEAT_INTERVAL_MS);
 setInterval(() => poll().catch(reportLoopError), POLL_INTERVAL_MS);
+process.on('unhandledRejection', (error) => reportLoopError(error));
+process.on('uncaughtException', (error) => {
+  console.error(`Fatal agent error: ${error.stack || error.message || error}`);
+  process.exitCode = 1;
+});
 
 async function register() {
   const payload = await request('/api/agent/register', {
@@ -154,6 +161,45 @@ function loadOrCreateDevice() {
   };
   writeFileSync(configPath, JSON.stringify(created, null, 2), 'utf8');
   return created;
+}
+
+function installFileLogger() {
+  mkdirSync(configDir, { recursive: true });
+  const originalLog = console.log.bind(console);
+  const originalWarn = console.warn.bind(console);
+  const originalError = console.error.bind(console);
+
+  function write(level, args) {
+    const line = `[${new Date().toISOString()}] ${level} ${args.map(formatLogValue).join(' ')}\n`;
+    try {
+      appendFileSync(logPath, line, 'utf8');
+    } catch {
+      // Logging must never stop the agent from registering.
+    }
+  }
+
+  console.log = (...args) => {
+    write('INFO', args);
+    originalLog(...args);
+  };
+  console.warn = (...args) => {
+    write('WARN', args);
+    originalWarn(...args);
+  };
+  console.error = (...args) => {
+    write('ERROR', args);
+    originalError(...args);
+  };
+}
+
+function formatLogValue(value) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function getMetadata() {
