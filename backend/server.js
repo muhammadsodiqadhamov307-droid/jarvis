@@ -18,6 +18,7 @@ import {
 import { appendToNote, createNote, deleteNote, listNotes } from './notes.js';
 import { webSearch } from './search.js';
 import { desktopReply, executeDesktopIntent, resolveDesktopIntent } from './desktop.js';
+import { classifyIntent } from './intent.js';
 import { formatUserDateTime, getUserTimeContext } from './time.js';
 import { getSettingsForClient, updateSettings } from './settings.js';
 import { getStartupStatus, setStartupEnabled } from './startup.js';
@@ -442,103 +443,18 @@ initDatabase()
 
 async function handleCommand(message, address) {
   const text = normalizeSpokenCommand(message.trim());
-  const lower = text.toLowerCase();
 
   if (isSearchRequest(text)) {
-    const query = text
-      .replace(/^(jarvis[, ]*)?(search online for|search the web for|web search for|search for|search|look up|google)\s+/i, '')
-      .trim();
-    let results;
-    try {
-      results = await webSearch(query || text);
-    } catch (error) {
-      return {
-        command: 'search:error',
-        payload: { query: query || text, error: error.message },
-        reply: `I could not complete the web search just now, ${address}: ${error.message}. The network appears to be behaving like it has opinions.`
-      };
-    }
-
-    if (results.provider !== 'none') {
-      const first = results.answer || results.results?.[0]?.snippet || 'I found results, but they are being coy.';
-      return {
-        command: 'search',
-        payload: results,
-        reply: `${first} I have placed the sources on screen, ${address}.`
-      };
-    }
-    return {
-      command: 'search:unconfigured',
-      payload: results,
-      reply: `Web search is not configured yet, ${address}. Add a Tavily or SerpAPI key and I shall stop pretending the internet is a rumour.`
-    };
+    return handleSearchCommand(stripSearchTrigger(text), text, address);
   }
 
   if (isDeviceStatusRequest(text)) {
-    const devices = await listDevices();
-    const selected = chooseRemoteDevice(text, devices, { allowDefault: false });
-    const relevantDevices = selected ? [selected] : devices;
-    return {
-      command: 'devices:status',
-      payload: relevantDevices,
-      reply: buildDeviceStatusReply(relevantDevices, address, Boolean(selected))
-    };
+    return handleDeviceStatusCommand(text, address);
   }
 
   const desktopIntent = resolveDesktopIntent(text);
   if (desktopIntent) {
-    if (os.platform() !== 'win32') {
-      const devices = (await listDevices()).filter((device) => device.status === 'approved');
-      if (!devices.length) {
-        return {
-          command: 'desktop:remote-unavailable',
-          reply: `No approved computer is linked yet, ${address}. Install the Windows agent, approve it in Devices, and I shall stop gesturing helplessly at the cloud.`
-        };
-      }
-      const targetDevice = chooseRemoteDevice(text, devices);
-      if (!targetDevice) {
-        return {
-          command: 'desktop:choose-device',
-          payload: devices,
-          reply: `Which computer shall I use, ${address}? I see ${devices.map((device) => device.name).join(', ')}. Set one as default in Devices and I shall stop asking obvious questions.`
-        };
-      }
-      const reachability = getDeviceReachability(targetDevice);
-      if (!reachability.online) {
-        return {
-          command: 'desktop:remote-offline',
-          payload: { device: targetDevice, reachability },
-          reply: `${targetDevice.name} is not reachable at the moment, ${address}. It is ${reachability.label}. I will not pretend to control a sleeping machine.`
-        };
-      }
-      const queued = await queueCommand(targetDevice.id, 'desktop_intent', { message: text });
-      const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
-      if (completed?.status === 'success') {
-        return {
-          command: 'desktop:remote-success',
-          payload: { device: targetDevice, queued, completed },
-          reply: `Done on ${targetDevice.name}, ${address}.`
-        };
-      }
-      if (completed?.status === 'error') {
-        return {
-          command: 'desktop:remote-error',
-          payload: { device: targetDevice, queued, completed },
-          reply: `I could not complete that on ${targetDevice.name}, ${address}: ${completed.error || 'the agent reported an unspecified fault'}.`
-        };
-      }
-      return {
-        command: 'desktop:remote-queued',
-        payload: { device: targetDevice, queued },
-        reply: `Command sent to ${targetDevice.name}, ${address}. I have not received the final report yet, which is inconvenient but not fatal.`
-      };
-    }
-    const result = await executeDesktopIntent(desktopIntent);
-    return {
-      command: 'desktop',
-      payload: result,
-      reply: desktopReply(result, address)
-    };
+    return handleDesktopCommand(text, desktopIntent, address);
   }
 
   const remember = text.match(/remember that\s+(.+)/i);
@@ -626,7 +542,155 @@ async function handleCommand(message, address) {
     };
   }
 
+  const nlpResult = await handleNlpIntent(text, address);
+  if (nlpResult?.reply) return nlpResult;
+
   return {};
+}
+
+async function handleNlpIntent(text, address) {
+  const devices = await safeListDevices();
+  const intent = await classifyIntent(text, { devices, address });
+  const minimumConfidence = Number(process.env.INTENT_CONFIDENCE_THRESHOLD || 0.62);
+  if (!intent || intent.type === 'none' || intent.confidence < minimumConfidence) return null;
+
+  const commandText = normalizeIntentCommandText(intent, text);
+
+  if (intent.type === 'web_search') {
+    return handleSearchCommand(intent.query || stripSearchTrigger(commandText), text, address, {
+      source: 'nlp',
+      intent
+    });
+  }
+
+  if (intent.type === 'device_status') {
+    return handleDeviceStatusCommand(commandText, address, { source: 'nlp', intent });
+  }
+
+  if (intent.type === 'desktop') {
+    const desktopIntent = resolveDesktopIntent(commandText);
+    if (!desktopIntent) return null;
+    return handleDesktopCommand(commandText, desktopIntent, address, { source: 'nlp', intent });
+  }
+
+  return null;
+}
+
+async function handleSearchCommand(query, originalText, address, meta = {}) {
+  const searchQuery = String(query || originalText || '').trim();
+  let results;
+  try {
+    results = await webSearch(searchQuery || originalText);
+  } catch (error) {
+    return {
+      command: meta.source === 'nlp' ? 'search:nlp-error' : 'search:error',
+      payload: { query: searchQuery || originalText, error: error.message, intent: meta.intent || null },
+      reply: `I could not complete the web search just now, ${address}: ${error.message}. The network appears to be behaving like it has opinions.`
+    };
+  }
+
+  if (results.provider !== 'none') {
+    const first = results.answer || results.results?.[0]?.snippet || 'I found results, but they are being coy.';
+    return {
+      command: 'search',
+      payload: { ...results, intent: meta.intent || null },
+      reply: `${first} I have placed the sources on screen, ${address}.`
+    };
+  }
+  return {
+    command: 'search:unconfigured',
+    payload: { ...results, intent: meta.intent || null },
+    reply: `Web search is not configured yet, ${address}. Add a Tavily or SerpAPI key and I shall stop pretending the internet is a rumour.`
+  };
+}
+
+async function handleDeviceStatusCommand(text, address, meta = {}) {
+  const devices = await listDevices();
+  const selected = chooseRemoteDevice(text, devices, { allowDefault: false });
+  const relevantDevices = selected ? [selected] : devices;
+  return {
+    command: meta.source === 'nlp' ? 'devices:nlp-status' : 'devices:status',
+    payload: { devices: relevantDevices, intent: meta.intent || null },
+    reply: buildDeviceStatusReply(relevantDevices, address, Boolean(selected))
+  };
+}
+
+async function handleDesktopCommand(text, desktopIntent, address, meta = {}) {
+  if (os.platform() !== 'win32') {
+    const devices = (await listDevices()).filter((device) => device.status === 'approved');
+    if (!devices.length) {
+      return {
+        command: 'desktop:remote-unavailable',
+        payload: { intent: meta.intent || null },
+        reply: `No approved computer is linked yet, ${address}. Install the Windows agent, approve it in Devices, and I shall stop gesturing helplessly at the cloud.`
+      };
+    }
+    const targetDevice = chooseRemoteDevice(text, devices);
+    if (!targetDevice) {
+      return {
+        command: 'desktop:choose-device',
+        payload: { devices, intent: meta.intent || null },
+        reply: `Which computer shall I use, ${address}? I see ${devices.map((device) => device.name).join(', ')}. Set one as default in Devices and I shall stop asking obvious questions.`
+      };
+    }
+    const reachability = getDeviceReachability(targetDevice);
+    if (!reachability.online) {
+      return {
+        command: 'desktop:remote-offline',
+        payload: { device: targetDevice, reachability, intent: meta.intent || null },
+        reply: `${targetDevice.name} is not reachable at the moment, ${address}. It is ${reachability.label}. I will not pretend to control a sleeping machine.`
+      };
+    }
+    const queued = await queueCommand(targetDevice.id, 'desktop_intent', { message: text, intent: meta.intent || null });
+    const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
+    if (completed?.status === 'success') {
+      return {
+        command: meta.source === 'nlp' ? 'desktop:nlp-remote-success' : 'desktop:remote-success',
+        payload: { device: targetDevice, queued, completed, intent: meta.intent || null },
+        reply: `Done on ${targetDevice.name}, ${address}.`
+      };
+    }
+    if (completed?.status === 'error') {
+      return {
+        command: meta.source === 'nlp' ? 'desktop:nlp-remote-error' : 'desktop:remote-error',
+        payload: { device: targetDevice, queued, completed, intent: meta.intent || null },
+        reply: `I could not complete that on ${targetDevice.name}, ${address}: ${completed.error || 'the agent reported an unspecified fault'}.`
+      };
+    }
+    return {
+      command: meta.source === 'nlp' ? 'desktop:nlp-remote-queued' : 'desktop:remote-queued',
+      payload: { device: targetDevice, queued, intent: meta.intent || null },
+      reply: `Command sent to ${targetDevice.name}, ${address}. I have not received the final report yet, which is inconvenient but not fatal.`
+    };
+  }
+  const result = await executeDesktopIntent(desktopIntent);
+  return {
+    command: meta.source === 'nlp' ? 'desktop:nlp' : 'desktop',
+    payload: { result, intent: meta.intent || null },
+    reply: desktopReply(result, address)
+  };
+}
+
+function stripSearchTrigger(text) {
+  return String(text || '')
+    .replace(/^(jarvis[, ]*)?(search online for|search the web for|web search for|search for|search|look up|google)\s+/i, '')
+    .trim();
+}
+
+function normalizeIntentCommandText(intent, fallbackText) {
+  const parts = [intent.normalizedText || fallbackText];
+  if (intent.targetDevice && !String(intent.normalizedText || fallbackText).toLowerCase().includes(intent.targetDevice.toLowerCase())) {
+    parts.push(`on ${intent.targetDevice}`);
+  }
+  return normalizeSpokenCommand(parts.join(' '));
+}
+
+async function safeListDevices() {
+  try {
+    return await listDevices();
+  } catch {
+    return [];
+  }
 }
 
 function tryMath(text) {
@@ -657,6 +721,10 @@ function normalizeSpokenCommand(text) {
     .replace(/\bde\s+fault\b/gi, 'default')
     .replace(/\bde\s+vice(?:s)?\b/gi, 'device')
     .replace(/\bcom\s+puter(?:s)?\b/gi, 'computer')
+    .replace(/\bla\s+test\b/gi, 'latest')
+    .replace(/\b(news|weather|search|look up)\s+(uh|um|erm)\b/gi, '$1')
+    .replace(/\b(uh|um|erm)\s+(ai|weather|news|right now|today)\b/gi, '$1')
+    .replace(/\bright\s+now\b/gi, 'current')
     .replace(/\bcon\s+nect(?:ed|s|ing)?\b/gi, (match) => match.toLowerCase().includes('ed') ? 'connected' : 'connect')
     .replace(/\s+/g, ' ')
     .trim();
@@ -704,7 +772,8 @@ function writeStreamEvent(res, type, payload = {}) {
 }
 
 function isSlowLookup(message) {
-  return /^search\s+/i.test(message) || /latest|news|weather|current|today/i.test(message);
+  const text = normalizeSpokenCommand(message);
+  return /^search\s+/i.test(text) || /latest|news|weather|current|today/i.test(text);
 }
 
 function isSearchRequest(message) {

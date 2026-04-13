@@ -41,6 +41,7 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
   const intentionallyStoppedRef = useRef(false);
   const startingRef = useRef(false);
   const assistantAudioBlockUntilRef = useRef(0);
+  const suppressLiveAssistantUntilRef = useRef(0);
   const callbacksRef = useRef({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus, onLiveTranscript, onLiveFinalText, onLiveToolResult });
 
   useEffect(() => {
@@ -73,7 +74,15 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
           callbacksRef.current.onLiveToolResult?.('search', payload.payload);
           return;
         }
-        handleLiveTranscripts(payload, callbacksRef.current, assistantAudioBlockUntilRef);
+        const transcript = readLiveTranscripts(payload);
+        const inputText = cleanMultilingualTranscript(transcript.inputText);
+        const outputText = cleanMultilingualTranscript(transcript.outputText);
+        if (isLikelyControllerIntent(inputText)) {
+          suppressLiveAssistantUntilRef.current = Date.now() + 6000;
+        }
+        const suppressAssistant = Date.now() < suppressLiveAssistantUntilRef.current;
+        handleLiveTranscripts({ inputText, outputText }, callbacksRef.current, assistantAudioBlockUntilRef, suppressAssistant);
+        if (suppressAssistant && hasLiveAudio(payload)) return;
         playLiveAudio(payload, audioContextRef.current, livePlaybackTimeRef, activeSourceRef, liveSourcesRef, assistantAudioBlockUntilRef, {
           onStart: () => {
             speakingRef.current = true;
@@ -400,6 +409,7 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
     const cleaned = String(text || '').trim();
     const ws = wsRef.current;
     if (!cleaned || !ws || ws.readyState !== WebSocket.OPEN || intentionallyStoppedRef.current) return false;
+    suppressLiveAssistantUntilRef.current = 0;
     ws.send(JSON.stringify({
       clientContent: {
         turns: [
@@ -669,18 +679,21 @@ async function parseLivePayload(data) {
   throw new Error(`Unsupported Live frame type: ${Object.prototype.toString.call(data)}`);
 }
 
-function handleLiveTranscripts(payload, callbacks = {}, assistantAudioBlockUntilRef = null) {
+function readLiveTranscripts(payload) {
   const server = payload.serverContent || payload.server_content || {};
   const input = server.inputTranscription || server.input_transcription || payload.inputTranscription || payload.input_transcription;
   const output = server.outputTranscription || server.output_transcription || payload.outputTranscription || payload.output_transcription;
+  return {
+    inputText: input?.text || '',
+    outputText: output?.text || ''
+  };
+}
 
-  const inputText = cleanMultilingualTranscript(input?.text);
-  const outputText = cleanMultilingualTranscript(output?.text);
-
+function handleLiveTranscripts({ inputText, outputText }, callbacks = {}, assistantAudioBlockUntilRef = null, suppressAssistant = false) {
   if (inputText && Date.now() >= (assistantAudioBlockUntilRef?.current || 0)) {
     callbacks.onLiveTranscript?.('user', inputText);
   }
-  if (outputText) callbacks.onLiveTranscript?.('assistant', outputText);
+  if (outputText && !suppressAssistant) callbacks.onLiveTranscript?.('assistant', outputText);
 }
 
 function cleanMultilingualTranscript(text) {
@@ -743,4 +756,40 @@ function playLiveAudio(payload, audioContext, livePlaybackTimeRef, activeSourceR
     }
     source.start(startAt);
   });
+}
+
+function hasLiveAudio(payload) {
+  const parts = payload?.serverContent?.modelTurn?.parts || payload?.serverContent?.modelTurn?.content?.parts || [];
+  return parts.some((part) => {
+    const inline = part.inlineData || part.inline_data;
+    return inline?.data && /audio\/pcm/i.test(inline.mimeType || inline.mime_type || '');
+  });
+}
+
+function isLikelyControllerIntent(text) {
+  const normalized = normalizeControllerText(text);
+  return (
+    /\b(open|launch|start|run|close|quit|exit)\b/.test(normalized) ||
+    /\b(telegram|youtube|google|chrome|spotify|calculator|explorer|word|excel|obs)\b/.test(normalized) ||
+    /\b(device|devices|computer|computers|default device|default computer)\b/.test(normalized) ||
+    /\b(message|text|dm|chat|contact|send message|send text)\b/.test(normalized) ||
+    /\b(play music|play song|pause music|resume music|next song|volume up|volume down)\b/.test(normalized) ||
+    /\b(telegramni och|telegramni yop|musiqa qo|открой телеграм|закрой телеграм|включи музыку)\b/.test(normalized)
+  );
+}
+
+function normalizeControllerText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/\bo\s+pen\b/g, 'open')
+    .replace(/\bopn\b/g, 'open')
+    .replace(/\bpen\s+(telegram|youtube|google|chrome|spotify|calculator|explorer)\b/g, 'open $1')
+    .replace(/\bte\s+le\s*gram\b/g, 'telegram')
+    .replace(/\btele\s+gram\b/g, 'telegram')
+    .replace(/\byou\s+tube\b/g, 'youtube')
+    .replace(/\bde\s+fault\b/g, 'default')
+    .replace(/\bde\s+vice(?:s)?\b/g, 'device')
+    .replace(/\bcom\s+puter(?:s)?\b/g, 'computer')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

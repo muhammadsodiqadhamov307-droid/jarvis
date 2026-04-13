@@ -333,6 +333,10 @@ function normalizeSpokenCommand(text) {
     .replace(/\bde\s+fault\b/gi, 'default')
     .replace(/\bde\s+vice(?:s)?\b/gi, 'device')
     .replace(/\bcom\s+puter(?:s)?\b/gi, 'computer')
+    .replace(/\bla\s+test\b/gi, 'latest')
+    .replace(/\b(news|weather|search|look up)\s+(uh|um|erm)\b/gi, '$1')
+    .replace(/\b(uh|um|erm)\s+(ai|weather|news|right now|today)\b/gi, '$1')
+    .replace(/\bright\s+now\b/gi, 'current')
     .replace(/\bcon\s+nect(?:ed|s|ing)?\b/gi, (match) => match.toLowerCase().includes('ed') ? 'connected' : 'connect')
     .replace(/\s+/g, ' ')
     .trim();
