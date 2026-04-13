@@ -60,14 +60,19 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS devices (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         device_key TEXT UNIQUE NOT NULL,
+        secret_hash TEXT NOT NULL,
         name TEXT NOT NULL,
         platform TEXT NOT NULL,
+        is_default BOOLEAN NOT NULL DEFAULT false,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'revoked')),
         last_seen_at TIMESTAMPTZ,
         metadata JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS secret_hash TEXT;
+      ALTER TABLE devices ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT false;
 
       CREATE TABLE IF NOT EXISTS commands (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,7 +121,42 @@ export async function initDatabase() {
         content TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY,
+        device_key TEXT UNIQUE NOT NULL,
+        secret_hash TEXT NOT NULL,
+        name TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'revoked')),
+        last_seen_at TEXT,
+        metadata TEXT DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS commands (
+        id TEXT PRIMARY KEY,
+        device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued', 'sent', 'running', 'success', 'error', 'cancelled')),
+        type TEXT NOT NULL,
+        payload TEXT DEFAULT '{}',
+        result TEXT DEFAULT '{}',
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor TEXT NOT NULL DEFAULT 'jarvis',
+        action TEXT NOT NULL,
+        metadata TEXT DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
     `);
+    migrateSqliteDeviceColumns();
   }
   initialized = true;
 }
@@ -142,16 +182,30 @@ function runSqlite(sql, params = []) {
     .replace(/\$(\d+)/g, '?')
     .replace(/\bILIKE\b/gi, 'LIKE')
     .replace(/::jsonb/g, '');
+  const sqliteParams = params.map((value) => {
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    return value;
+  });
   const statement = sqlite.prepare(normalized);
   const command = normalized.trim().split(/\s+/)[0].toUpperCase();
 
   if (command === 'SELECT' || /\bRETURNING\b/i.test(normalized)) {
-    return { rows: statement.all(...params), rowCount: 0 };
+    return { rows: statement.all(...sqliteParams), rowCount: 0 };
   }
 
-  const info = statement.run(...params);
+  const info = statement.run(...sqliteParams);
   return {
     rows: info.lastInsertRowid ? [{ id: info.lastInsertRowid }] : [],
     rowCount: info.changes
   };
+}
+
+function migrateSqliteDeviceColumns() {
+  const columns = sqlite.prepare('PRAGMA table_info(devices)').all().map((column) => column.name);
+  if (!columns.includes('secret_hash')) {
+    sqlite.exec("ALTER TABLE devices ADD COLUMN secret_hash TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes('is_default')) {
+    sqlite.exec('ALTER TABLE devices ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0');
+  }
 }

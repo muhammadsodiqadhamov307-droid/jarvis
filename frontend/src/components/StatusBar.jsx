@@ -1,7 +1,7 @@
 import React from 'react';
-import { Mic, Radio, Settings, ShieldCheck } from 'lucide-react';
+import { MonitorCog, Mic, Radio, Settings, ShieldCheck } from 'lucide-react';
 
-export default function StatusBar({ status, liveReady, address, onAddressChange, onOpenSettings }) {
+export default function StatusBar({ status, liveReady, address, onAddressChange, onOpenSettings, onOpenDevices }) {
   return (
     <header className="flex flex-col gap-4 border-b border-reactor/20 bg-void/70 px-4 py-4 backdrop-blur md:flex-row md:items-center md:justify-between">
       <div>
@@ -31,6 +31,13 @@ export default function StatusBar({ status, liveReady, address, onAddressChange,
           className="inline-flex items-center gap-2 rounded border border-slate-600 px-3 py-2 text-slate-200 hover:border-reactor hover:text-reactor"
         >
           <Settings size={16} /> Settings
+        </button>
+        <button
+          type="button"
+          onClick={onOpenDevices}
+          className="inline-flex items-center gap-2 rounded border border-slate-600 px-3 py-2 text-slate-200 hover:border-reactor hover:text-reactor"
+        >
+          <MonitorCog size={16} /> Devices
         </button>
       </div>
     </header>

@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { attachGeminiLiveProxy, geminiText, geminiTextStream, geminiTts } from './gemini.js';
@@ -21,6 +22,18 @@ import { formatUserDateTime, getUserTimeContext } from './time.js';
 import { getSettingsForClient, updateSettings } from './settings.js';
 import { getStartupStatus, setStartupEnabled } from './startup.js';
 import { dbProvider, initDatabase } from './db.js';
+import {
+  approveDevice,
+  heartbeatDevice,
+  listCommands,
+  listDevices,
+  pollCommands,
+  queueCommand,
+  registerDevice,
+  revokeDevice,
+  updateCommandStatus,
+  updateDevice
+} from './devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
@@ -192,6 +205,104 @@ app.post('/api/desktop/intent', async (req, res, next) => {
   }
 });
 
+app.post('/api/agent/register', async (req, res, next) => {
+  try {
+    const device = await registerDevice(req.body || {});
+    res.status(device.status === 'pending' ? 202 : 200).json({
+      device,
+      message: device.status === 'approved'
+        ? 'Device registered and approved.'
+        : 'Device registered and awaiting admin approval.'
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/agent/heartbeat', async (req, res, next) => {
+  try {
+    res.json({ device: await heartbeatDevice(req.body || {}) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/agent/poll', async (req, res, next) => {
+  try {
+    res.json(await pollCommands(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/agent/commands/:id/status', async (req, res, next) => {
+  try {
+    const command = await updateCommandStatus({
+      ...(req.body || {}),
+      commandId: req.params.id
+    });
+    if (!command) return res.status(404).json({ error: 'Command not found for this device.' });
+    res.json({ command });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/devices', async (_req, res, next) => {
+  try {
+    res.json(await listDevices());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/devices/:id/approve', async (req, res, next) => {
+  try {
+    const device = await approveDevice(req.params.id, req.body || {});
+    if (!device) return res.status(404).json({ error: 'Device not found.' });
+    res.json(device);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/api/devices/:id', async (req, res, next) => {
+  try {
+    const device = await updateDevice(req.params.id, req.body || {});
+    if (!device) return res.status(404).json({ error: 'Device not found.' });
+    res.json(device);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/devices/:id/revoke', async (req, res, next) => {
+  try {
+    const device = await revokeDevice(req.params.id);
+    if (!device) return res.status(404).json({ error: 'Device not found.' });
+    res.json(device);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/devices/:id/commands', async (req, res, next) => {
+  try {
+    res.json(await listCommands(req.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/devices/:id/commands', async (req, res, next) => {
+  try {
+    const command = await queueCommand(req.params.id, req.body.type, req.body.payload || {});
+    res.status(201).json(command);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/chat', async (req, res, next) => {
   try {
     const address = req.body.address || process.env.DEFAULT_ADDRESS || 'Sir';
@@ -312,7 +423,7 @@ if (process.env.JARVIS_SERVE_FRONTEND === 'true' || process.env.NODE_ENV === 'pr
 
 app.use((error, _req, res, _next) => {
   console.error(error);
-  res.status(500).json({
+  res.status(error.status || error.statusCode || 500).json({
     error: error.message || 'A regrettable malfunction occurred.'
   });
 });
@@ -364,6 +475,29 @@ async function handleCommand(message, address) {
 
   const desktopIntent = resolveDesktopIntent(text);
   if (desktopIntent) {
+    if (os.platform() !== 'win32') {
+      const devices = (await listDevices()).filter((device) => device.status === 'approved');
+      if (!devices.length) {
+        return {
+          command: 'desktop:remote-unavailable',
+          reply: `No approved computer is linked yet, ${address}. Install the Windows agent, approve it in Devices, and I shall stop gesturing helplessly at the cloud.`
+        };
+      }
+      const targetDevice = chooseRemoteDevice(text, devices);
+      if (!targetDevice) {
+        return {
+          command: 'desktop:choose-device',
+          payload: devices,
+          reply: `Which computer shall I use, ${address}? I see ${devices.map((device) => device.name).join(', ')}. Set one as default in Devices and I shall stop asking obvious questions.`
+        };
+      }
+      const queued = await queueCommand(targetDevice.id, 'desktop_intent', { message: text });
+      return {
+        command: 'desktop:remote-queued',
+        payload: { device: targetDevice, queued },
+        reply: `Command sent to ${targetDevice.name}, ${address}. I shall await its report with dignified impatience.`
+      };
+    }
     const result = await executeDesktopIntent(desktopIntent);
     return {
       command: 'desktop',
@@ -521,6 +655,33 @@ function securityHeaders(_req, res, next) {
     ].join('; ')
   );
   next();
+}
+
+function chooseRemoteDevice(text, devices) {
+  if (devices.length === 1) return devices[0];
+  const normalized = normalizeDeviceText(text);
+  const namedDevice = devices.find((device) => {
+    const names = [
+      device.name,
+      device.metadata?.hostname,
+      device.metadata?.username
+    ].filter(Boolean);
+    return names.some((name) => {
+      const target = normalizeDeviceText(name);
+      return target && normalized.includes(target);
+    });
+  });
+  if (namedDevice) return namedDevice;
+  return devices.find((device) => device.is_default) || null;
+}
+
+function normalizeDeviceText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\b(my|computer|pc|laptop|desktop|windows|kompyuter|noutbuk)\b/giu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function synthesizeSpeech(text) {

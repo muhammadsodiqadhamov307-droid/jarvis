@@ -1,5 +1,6 @@
 import React from 'react';
 import ArcReactor from './components/ArcReactor.jsx';
+import DevicesPanel from './components/DevicesPanel.jsx';
 import NotesPanel from './components/NotesPanel.jsx';
 import SettingsPanel from './components/SettingsPanel.jsx';
 import StatusBar from './components/StatusBar.jsx';
@@ -9,6 +10,7 @@ import { useJarvis } from './hooks/useJarvis.js';
 export default function App() {
   const jarvis = useJarvis();
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [devicesOpen, setDevicesOpen] = React.useState(false);
 
   return (
     <main
@@ -22,6 +24,7 @@ export default function App() {
         address={jarvis.address}
         onAddressChange={jarvis.setAddress}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenDevices={() => setDevicesOpen(true)}
       />
       <div className="grid min-h-[calc(100vh-88px)] grid-cols-1 lg:grid-cols-[320px_minmax(360px,1fr)_380px]">
         <NotesPanel
@@ -66,6 +69,7 @@ export default function App() {
         />
       </div>
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <DevicesPanel open={devicesOpen} onClose={() => setDevicesOpen(false)} />
     </main>
   );
 }

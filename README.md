@@ -11,6 +11,7 @@ A JARVIS-inspired web assistant with a React HUD, Express backend, SQLite memory
 - Falls back to text chat when live audio or speech recognition is unavailable.
 - Handles notes commands, memory commands, reminders, calculator requests, time/date, and optional Tavily or SerpAPI search.
 - Can route safe local desktop intents on Windows, such as opening Telegram, YouTube, Google, Chrome, Spotify, VS Code, and media playback controls.
+- Can link remote Windows computers through the JARVIS Computer Agent. New machines appear as pending devices, then you approve, rename, and optionally mark one as the default computer.
 
 ## Requirements
 
@@ -103,9 +104,9 @@ Most backend settings apply to new requests immediately. If you change Gemini Li
 
 ## Windows Installable App
 
-The project includes a Windows installer build path using Inno Setup.
+The project includes Windows installer build paths using Inno Setup.
 
-Build the installer:
+Build the main local JARVIS app installer:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\windows\installer\build_installer.ps1
@@ -131,6 +132,32 @@ For development without building an installer:
 ```powershell
 npm run start:app
 ```
+
+## Windows Computer Agent
+
+The Computer Agent is the small app you install on any Windows computer you want the server-hosted JARVIS to control.
+
+Build the agent installer:
+
+```powershell
+npm run build:agent-installer
+```
+
+The installer is created at:
+
+```text
+release\installer\JarvisComputerAgent-Setup.exe
+```
+
+When installed, the agent:
+
+- Starts automatically when that Windows user logs in.
+- Creates its own private device key under the user's AppData folder.
+- Registers with `https://jarvis12345.duckdns.org` as a pending device.
+- Shows no API keys, device tokens, or secrets in a settings screen.
+- Executes only allowlisted desktop actions after you approve the device.
+
+Open `Devices` in the JARVIS admin UI to approve a new computer. Set a friendly name such as `My computer`, mark it as default if desired, and save it. Then commands like `open Telegram` go to the default computer, while `open Telegram on second computer` targets the named computer.
 
 ## Voice Notes
 
