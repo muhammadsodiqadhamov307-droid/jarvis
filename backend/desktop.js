@@ -82,14 +82,14 @@ export function resolveDesktopIntent(raw) {
   if (!text) return null;
   if (isSearchLikeRequest(lower) && !isExplicitWeatherAppRequest(lower)) return null;
 
-  const website = resolveWebsiteIntent(lower, text);
-  if (website) return website;
-
   const media = resolveMediaIntent(lower);
   if (media) return media;
 
   const app = resolveAppIntent(lower);
   if (app) return app;
+
+  const website = resolveWebsiteIntent(lower, text);
+  if (website) return website;
 
   const generalApp = resolveGeneralAppIntent(text, lower);
   if (generalApp) return generalApp;
@@ -107,8 +107,14 @@ function normalizeMultilingualDesktopIntent(text) {
     .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat)\s+(telegram|telegramm|телеграм|телеграмм)\b/giu, 'close telegram')
     .replace(/\b(youtube|you tube|yutub|ютуб)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open youtube')
     .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(youtube|you tube|yutub|ютуб)\b/giu, 'open youtube')
+    .replace(/\b(youtube|you tube|yutub|ютуб)(ni)?\s+(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\b/giu, 'close youtube')
+    .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\s+(youtube|you tube|yutub|ютуб)\b/giu, 'close youtube')
+    .replace(/\b(youtube|you tube|yutub|ютуб)\s+ni\s+yopib\s+qo['‘’`]?y\b/giu, 'close youtube')
     .replace(/\b(google|гугл)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open google')
     .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(google|гугл)\b/giu, 'open google')
+    .replace(/\b(google|гугл)(ni)?\s+(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\b/giu, 'close google')
+    .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\s+(google|гугл)\b/giu, 'close google')
+    .replace(/\b(google|гугл)\s+ni\s+yopib\s+qo['‘’`]?y\b/giu, 'close google')
     .replace(/\b(xabar yoz|xabar yubor|yozib yubor|telegramdan yoz|sms yoz|sms yubor)\b/giu, 'message on telegram')
     .replace(/\b(musiqa|qo['‘’`]?shiq|ashula)\s+(qo['‘’`]?y|yoq|ijro et)\b/giu, 'play music')
     .replace(/\b(.{2,80}?)\s+(qo['‘’`]?y|ijro et)\b/giu, (_match, query) => `play ${query}`);
@@ -117,7 +123,9 @@ function normalizeMultilingualDesktopIntent(text) {
     .replace(/(?:^|\s)(открой|запусти|включи)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' open telegram')
     .replace(/(?:^|\s)(закрой|выключи|останови)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' close telegram')
     .replace(/(?:^|\s)(открой|запусти|включи)\s+(ютуб|youtube)(?=\s|$)/giu, ' open youtube')
+    .replace(/(?:^|\s)(закрой|выключи|останови)\s+(ютуб|youtube)(?=\s|$)/giu, ' close youtube')
     .replace(/(?:^|\s)(открой|запусти|включи)\s+(гугл|google)(?=\s|$)/giu, ' open google')
+    .replace(/(?:^|\s)(закрой|выключи|останови)\s+(гугл|google)(?=\s|$)/giu, ' close google')
     .replace(/(?:^|\s)(напиши|отправь)\s+(сообщение|смс|sms)(?=\s|$)/giu, ' message on telegram')
     .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(музыку|песню)(?=\s|$)/giu, ' play music')
     .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(.{2,80})/giu, (_match, _verb, query) => ` play ${query}`);
@@ -151,6 +159,11 @@ export async function executeDesktopIntent(intent) {
     return { ok: true, ...intent };
   }
 
+  if (intent.action === 'close_url') {
+    await closeWebsiteTab(intent.label);
+    return { ok: true, ...intent };
+  }
+
   if (intent.action === 'media_key') {
     await sendMediaKey(intent.key);
     return { ok: true, ...intent };
@@ -170,6 +183,9 @@ export function desktopReply(result, address = 'Sir') {
     return `Opening ${result.label}, ${address}.`;
   }
   if (result.action === 'close_app') {
+    return `Closing ${result.label}, ${address}.`;
+  }
+  if (result.action === 'close_url') {
     return `Closing ${result.label}, ${address}.`;
   }
   if (result.action === 'media_key') {
@@ -201,6 +217,14 @@ function resolveMediaIntent(lower) {
 }
 
 function resolveWebsiteIntent(lower, original) {
+  if (/\b(close|quit|exit)\b.*\b(youtube|you tube|google)\b/.test(lower)) {
+    const label = /\b(youtube|you tube)\b/.test(lower) ? 'YouTube' : 'Google';
+    return {
+      action: 'close_url',
+      label
+    };
+  }
+
   const directPlay = resolveGeneralPlayIntent(lower, original);
   if (directPlay) return directPlay;
 
@@ -272,6 +296,7 @@ function resolveAppIntent(lower) {
 
   if (!appKey) return null;
   const app = APP_ALIASES[appKey];
+  if (app.url && action === 'close_app') return null;
   if (app.url && action === 'open_app') {
     return { action: 'open_url', app: appKey, label: app.label, url: app.url };
   }
@@ -386,9 +411,15 @@ async function closeApp(appKey) {
   }
   const script = `
 param([string[]]$Names)
+$closed = 0
 foreach ($Name in $Names) {
-  Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force
+  $matches = @(Get-Process -Name $Name -ErrorAction SilentlyContinue)
+  if ($matches.Count -gt 0) {
+    $matches | Stop-Process -Force
+    $closed += $matches.Count
+  }
 }
+if ($closed -eq 0) { throw "No running process matched the requested app." }
 `;
   await runPowerShell(script, app.processes);
 }
@@ -467,9 +498,15 @@ async function closeAppByName(appName) {
   ]));
   const script = `
 param([string[]]$Names)
+$closed = 0
 foreach ($Name in $Names) {
-  Get-Process -Name $Name -ErrorAction SilentlyContinue | Stop-Process -Force
+  $matches = @(Get-Process -Name $Name -ErrorAction SilentlyContinue)
+  if ($matches.Count -gt 0) {
+    $matches | Stop-Process -Force
+    $closed += $matches.Count
+  }
 }
+if ($closed -eq 0) { throw "No running process matched the requested app." }
 `;
   await runPowerShell(script, names);
 }
@@ -477,16 +514,53 @@ foreach ($Name in $Names) {
 async function closeExplorerWindows() {
   const script = `
 $shell = New-Object -ComObject Shell.Application
+$closed = 0
 foreach ($window in @($shell.Windows())) {
   try {
     $path = $window.FullName
     if ($path -and [System.IO.Path]::GetFileName($path).ToLowerInvariant() -eq 'explorer.exe') {
       $window.Quit()
+      $closed += 1
     }
   } catch {}
 }
+if ($closed -eq 0) { throw "No File Explorer window is currently open." }
 `;
   await runPowerShell(script);
+}
+
+async function closeWebsiteTab(label) {
+  const script = `
+param([string]$Label)
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class NativeMethods {
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+"@
+$browserNames = @('chrome', 'msedge', 'firefox', 'brave', 'opera')
+$target = $null
+foreach ($name in $browserNames) {
+  $target = Get-Process -Name $name -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 } |
+    Select-Object -First 1
+  if ($target) { break }
+}
+if (-not $target) {
+  throw "No supported browser window is currently open for $Label."
+}
+[NativeMethods]::ShowWindowAsync($target.MainWindowHandle, 5) | Out-Null
+Start-Sleep -Milliseconds 120
+[NativeMethods]::SetForegroundWindow($target.MainWindowHandle) | Out-Null
+Start-Sleep -Milliseconds 120
+$shell = New-Object -ComObject WScript.Shell
+$null = $shell.AppActivate($target.Id)
+Start-Sleep -Milliseconds 120
+$shell.SendKeys('^w')
+`;
+  await runPowerShell(script, [label]);
 }
 
 async function sendMediaKey(key) {

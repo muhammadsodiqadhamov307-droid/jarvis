@@ -77,7 +77,7 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
         const transcript = readLiveTranscripts(payload);
         const inputText = cleanMultilingualTranscript(transcript.inputText);
         const outputText = cleanMultilingualTranscript(transcript.outputText);
-        if (isLikelyControllerIntent(inputText)) {
+        if (isLikelyControllerIntent(inputText) || isLikelySearchIntent(inputText)) {
           suppressLiveAssistantUntilRef.current = Date.now() + 6000;
         }
         const suppressAssistant = Date.now() < suppressLiveAssistantUntilRef.current;
@@ -776,6 +776,11 @@ function isLikelyControllerIntent(text) {
     /\b(play music|play song|pause music|resume music|next song|volume up|volume down)\b/.test(normalized) ||
     /\b(telegramni och|telegramni yop|musiqa qo|открой телеграм|закрой телеграм|включи музыку)\b/.test(normalized)
   );
+}
+
+function isLikelySearchIntent(text) {
+  const normalized = normalizeControllerText(text);
+  return /\b(weather|forecast|temperature|latest|news|current|search|look up|google|internet|online|information)\b/.test(normalized);
 }
 
 function normalizeControllerText(text) {

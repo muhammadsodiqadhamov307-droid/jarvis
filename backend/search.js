@@ -1,21 +1,25 @@
 export async function webSearch(query) {
   const q = String(query || '').trim();
   if (!q) return { provider: 'none', results: [] };
+  const timeoutMs = Number(process.env.SEARCH_TIMEOUT_MS || 12000);
 
   if (process.env.TAVILY_API_KEY) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const response = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.TAVILY_API_KEY}`
       },
+      signal: controller.signal,
       body: JSON.stringify({
         query: q,
         search_depth: 'basic',
         include_answer: true,
         max_results: 5
       })
-    });
+    }).finally(() => clearTimeout(timer));
     if (!response.ok) throw new Error(`Tavily search failed: ${response.status}`);
     const data = await response.json();
     return {
@@ -31,7 +35,11 @@ export async function webSearch(query) {
 
   if (process.env.SERPAPI_KEY) {
     const params = new URLSearchParams({ q, api_key: process.env.SERPAPI_KEY, engine: 'google' });
-    const response = await fetch(`https://serpapi.com/search.json?${params.toString()}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(`https://serpapi.com/search.json?${params.toString()}`, {
+      signal: controller.signal
+    }).finally(() => clearTimeout(timer));
     if (!response.ok) throw new Error(`SerpAPI search failed: ${response.status}`);
     const data = await response.json();
     return {

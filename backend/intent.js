@@ -110,12 +110,16 @@ Classify into one of:
 
 Important:
 - Infer intent from meaning, not just exact words.
+- Preserve the action exactly. If the user says open, keep open. If the user says close, keep close. If the user says play, do not turn that into close or search.
 - If the user says they need or want an app/site/tool, classify as desktop and normalize to "open <target>".
 - If the user wants to message/text/chat/contact someone and does not name another messaging app, normalize to "open telegram".
 - If the user asks for fresh/current/latest information, classify as web_search even when the speech transcript is messy.
 - If the user asks what devices are connected or whether a computer is online, classify as device_status.
 - If the user asks for the name of their computer or device, classify as device_status.
 - Use the current device display name from the "name" field when choosing or naming a device. Do not prefer hostnames over display names.
+- If the user names a target app or site after an open/close/play verb, keep that target in normalizedText.
+- If the user says "close YouTube on my second computer", normalizedText should stay close-oriented and target "my second computer".
+- If the user asks to search for weather/news/latest/current information, do not rewrite that as a desktop command.
 
 Return this JSON shape:
 {

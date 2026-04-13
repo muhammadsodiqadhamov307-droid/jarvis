@@ -444,19 +444,6 @@ initDatabase()
 async function handleCommand(message, address) {
   const text = await normalizeIncomingCommand(message);
 
-  if (isSearchRequest(text)) {
-    return handleSearchCommand(stripSearchTrigger(text), text, address);
-  }
-
-  if (isDeviceStatusRequest(text)) {
-    return handleDeviceStatusCommand(text, address);
-  }
-
-  const desktopIntent = resolveDesktopIntent(text);
-  if (desktopIntent) {
-    return handleDesktopCommand(text, desktopIntent, address);
-  }
-
   const remember = text.match(/remember that\s+(.+)/i);
   if (remember) {
     const content = remember[1].trim();
@@ -542,50 +529,126 @@ async function handleCommand(message, address) {
     };
   }
 
-  const nlpResult = await handleNlpIntent(text, address);
-  if (nlpResult?.reply) return nlpResult;
+  const analysis = await analyzeCommand(text, address);
+  if (analysis?.plan) {
+    return executeCommandPlan(analysis.plan, address);
+  }
 
   return {};
 }
 
 async function normalizeIncomingCommand(message) {
-  const normalized = normalizeSpokenCommand(String(message || '').trim());
-  if (!looksLikeFragmentedSpeech(normalized)) return normalized;
+  const raw = String(message || '').trim();
+  if (!raw) return '';
   try {
-    const repaired = normalizeSpokenCommand(await geminiRepairTranscript(normalized));
-    return repaired || normalized;
+    const repaired = await geminiRepairTranscript(raw);
+    const normalized = normalizeSpokenCommand(repaired);
+    return normalized || normalizeSpokenCommand(raw);
   } catch (error) {
     console.warn(`Transcript repair unavailable: ${error.message}`);
-    return normalized;
+    return normalizeSpokenCommand(raw);
   }
 }
 
-async function handleNlpIntent(text, address) {
+async function analyzeCommand(text, address) {
   const devices = await safeListDevices();
   const intent = await classifyIntent(text, { devices, address });
   const minimumConfidence = Number(process.env.INTENT_CONFIDENCE_THRESHOLD || 0.62);
-  if (!intent || intent.type === 'none' || intent.confidence < minimumConfidence) return null;
+  const confidentIntent = intent && intent.type !== 'none' && intent.confidence >= minimumConfidence;
 
-  const commandText = normalizeIntentCommandText(intent, text);
+  if (confidentIntent) {
+    const commandText = normalizeIntentCommandText(intent, text);
+    if (intent.type === 'web_search') {
+      return {
+        text,
+        plan: {
+          kind: 'search',
+          query: intent.query || stripSearchTrigger(commandText),
+          originalText: text,
+          meta: { source: 'nlp', intent }
+        }
+      };
+    }
 
-  if (intent.type === 'web_search') {
-    return handleSearchCommand(intent.query || stripSearchTrigger(commandText), text, address, {
-      source: 'nlp',
-      intent
-    });
+    if (intent.type === 'device_status') {
+      return {
+        text,
+        plan: {
+          kind: 'device_status',
+          text: commandText,
+          meta: { source: 'nlp', intent }
+        }
+      };
+    }
+
+    if (intent.type === 'desktop') {
+      const desktopIntent = resolveDesktopIntent(commandText);
+      if (desktopIntent) {
+        return {
+          text,
+          plan: buildDesktopPlan(commandText, desktopIntent, devices, {
+            source: 'nlp',
+            intent,
+            explicitTargetDevice: intent.targetDevice
+          })
+        };
+      }
+    }
   }
 
-  if (intent.type === 'device_status') {
-    return handleDeviceStatusCommand(commandText, address, { source: 'nlp', intent });
+  if (isSearchRequest(text)) {
+    return {
+      text,
+      plan: {
+        kind: 'search',
+        query: stripSearchTrigger(text),
+        originalText: text,
+        meta: { source: 'local' }
+      }
+    };
   }
 
-  if (intent.type === 'desktop') {
-    const desktopIntent = resolveDesktopIntent(commandText);
-    if (!desktopIntent) return null;
-    return handleDesktopCommand(commandText, desktopIntent, address, { source: 'nlp', intent });
+  if (isDeviceStatusRequest(text)) {
+    return {
+      text,
+      plan: {
+        kind: 'device_status',
+        text,
+        meta: { source: 'local' }
+      }
+    };
+  }
+
+  const localDesktopIntent = resolveDesktopIntent(text);
+  if (localDesktopIntent) {
+    return {
+      text,
+      plan: buildDesktopPlan(text, localDesktopIntent, devices, { source: 'local' })
+    };
   }
 
   return null;
+}
+
+async function executeCommandPlan(plan, address) {
+  if (!plan) return {};
+  if (plan.kind === 'search') {
+    return handleSearchCommand(plan.query, plan.originalText, address, plan.meta);
+  }
+  if (plan.kind === 'device_status') {
+    return handleDeviceStatusCommand(plan.text, address, plan.meta);
+  }
+  if (plan.kind === 'desktop') {
+    if (plan.errorReply) {
+      return {
+        command: plan.command || 'desktop:target-missing',
+        payload: plan.payload || null,
+        reply: plan.errorReply
+      };
+    }
+    return handleDesktopCommand(plan.text, plan.desktopIntent, address, plan.meta, plan.target, plan.requestedName);
+  }
+  return {};
 }
 
 async function handleSearchCommand(query, originalText, address, meta = {}) {
@@ -618,7 +681,18 @@ async function handleSearchCommand(query, originalText, address, meta = {}) {
 
 async function handleDeviceStatusCommand(text, address, meta = {}) {
   const devices = await listDevices();
-  const selected = chooseRemoteDevice(text, devices, { allowDefault: false });
+  const approved = devices.filter((device) => device.status === 'approved');
+  const requestedName = resolveRequestedDeviceName(text, meta.intent?.targetDevice || '');
+  const selected = requestedName
+    ? findDeviceByName(requestedName, approved)
+    : chooseRemoteDevice(text, approved, { allowDefault: false });
+  if (requestedName && !selected) {
+    return {
+      command: 'devices:target-missing',
+      payload: { requested: requestedName, devices: approved, intent: meta.intent || null },
+      reply: `I do not see a linked device named "${requestedName}", ${address}.`
+    };
+  }
   const relevantDevices = selected ? [selected] : devices;
   const nameReply = buildDeviceNameReply(text, relevantDevices, address, Boolean(selected));
   return {
@@ -628,7 +702,7 @@ async function handleDeviceStatusCommand(text, address, meta = {}) {
   };
 }
 
-async function handleDesktopCommand(text, desktopIntent, address, meta = {}) {
+async function handleDesktopCommand(text, desktopIntent, address, meta = {}, targetOverride = null, requestedName = '') {
   if (os.platform() !== 'win32') {
     const devices = (await listDevices()).filter((device) => device.status === 'approved');
     if (!devices.length) {
@@ -638,8 +712,15 @@ async function handleDesktopCommand(text, desktopIntent, address, meta = {}) {
         reply: `No approved computer is linked yet, ${address}. Install the Windows agent, approve it in Devices, and I shall stop gesturing helplessly at the cloud.`
       };
     }
-    const targetDevice = chooseRemoteDevice(text, devices);
+    const targetDevice = targetOverride || chooseRemoteDevice(text, devices);
     if (!targetDevice) {
+      if (requestedName) {
+        return {
+          command: 'desktop:target-missing',
+          payload: { requested: requestedName, devices, intent: meta.intent || null },
+          reply: `I do not see a linked device named "${requestedName}", ${address}. Open Devices and approve it, or choose a different machine.`
+        };
+      }
       return {
         command: 'desktop:choose-device',
         payload: { devices, intent: meta.intent || null },
@@ -698,6 +779,62 @@ function normalizeIntentCommandText(intent, fallbackText) {
   return normalizeSpokenCommand(parts.join(' '));
 }
 
+function buildDesktopPlan(text, desktopIntent, devices, { source = 'local', intent = null, explicitTargetDevice = '' } = {}) {
+  const approved = (devices || []).filter((device) => device.status === 'approved');
+  const requestedName = resolveRequestedDeviceName(text, explicitTargetDevice);
+  let target = null;
+
+  if (approved.length) {
+    target = requestedName
+      ? findDeviceByName(requestedName, approved)
+      : chooseRemoteDevice(text, approved);
+  }
+
+  return {
+    kind: 'desktop',
+    text,
+    desktopIntent,
+    meta: { source, intent },
+    target,
+    requestedName
+  };
+}
+
+function resolveRequestedDeviceName(text, explicitTargetDevice = '') {
+  const explicit = String(explicitTargetDevice || '').trim();
+  if (explicit) return explicit;
+  const value = String(text || '').trim();
+  if (!value || /\bdefault\b/i.test(value)) return '';
+
+  const patterns = [
+    /\b(?:on|in|at|for)\s+(?:my\s+)?([\p{L}\p{N}][\p{L}\p{N}\s-]{0,40}?)\s+(?:computer|pc|laptop|desktop|device)\b/iu,
+    /\b(?:my\s+)?([\p{L}\p{N}][\p{L}\p{N}\s-]{0,40}?)\s+(?:computer|pc|laptop|desktop|device)\b/iu,
+    /\b(ikkinchi|birinchi|uchinchi|to['‘’`]?rtinchi|beshinchi)\s+kompyuter\b/iu,
+    /\b(второй|втором|первый|первом|третий|третьем)\s+компьютер(?:е)?\b/iu
+  ];
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (!match) continue;
+    const candidate = (match[1] || match[0] || '').trim();
+    if (candidate) return candidate;
+  }
+
+  return '';
+}
+
+function findDeviceByName(requestedName, devices) {
+  const normalizedRequested = normalizeDeviceText(requestedName);
+  if (!normalizedRequested) return null;
+  return devices.find((device) => {
+    const names = [device.name, device.metadata?.hostname, device.metadata?.username].filter(Boolean);
+    return names.some((name) => {
+      const target = normalizeDeviceText(name);
+      return target && normalizedRequested === target;
+    });
+  }) || null;
+}
+
 async function safeListDevices() {
   try {
     return await listDevices();
@@ -726,7 +863,8 @@ function tryMath(text) {
 }
 
 function normalizeSpokenCommand(text) {
-  return repairFragmentedCommandWords(normalizeMultilingualCommand(String(text || '')))
+  const merged = mergeSpelledOutWords(String(text || ''));
+  return repairFragmentedCommandWords(normalizeMultilingualCommand(merged))
     .replace(/\bo\s+pen\b/gi, 'open')
     .replace(/\bte\s+le\s*gram\b/gi, 'telegram')
     .replace(/\byou\s+tube\b/gi, 'youtube')
@@ -741,6 +879,33 @@ function normalizeSpokenCommand(text) {
     .replace(/\bcon\s+nect(?:ed|s|ing)?\b/gi, (match) => match.toLowerCase().includes('ed') ? 'connected' : 'connect')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function mergeSpelledOutWords(text) {
+  const tokens = String(text || '').split(/\s+/).filter(Boolean);
+  const out = [];
+  let buffer = [];
+
+  const flush = () => {
+    if (!buffer.length) return;
+    if (buffer.length >= 3) {
+      out.push(buffer.join(''));
+    } else {
+      out.push(...buffer);
+    }
+    buffer = [];
+  };
+
+  for (const token of tokens) {
+    if (/^\p{L}$/u.test(token)) {
+      buffer.push(token);
+    } else {
+      flush();
+      out.push(token);
+    }
+  }
+  flush();
+  return out.join(' ');
 }
 
 function repairFragmentedCommandWords(text) {
@@ -776,8 +941,12 @@ function normalizeMultilingualCommand(text) {
     .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat)\s+(telegram|telegramm|телеграм|телеграмм)\b/giu, 'close telegram')
     .replace(/\b(youtube|you tube|yutub|ютуб)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open youtube')
     .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(youtube|you tube|yutub|ютуб)\b/giu, 'open youtube')
+    .replace(/\b(youtube|you tube|yutub|ютуб)(ni)?\s+(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\b/giu, 'close youtube')
+    .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\s+(youtube|you tube|yutub|ютуб)\b/giu, 'close youtube')
     .replace(/\b(google|гугл)(ni)?\s+(och|oching|ochib ber|ishga tushir|yoq)\b/giu, 'open google')
     .replace(/\b(och|oching|ochib ber|ishga tushir|yoq)\s+(google|гугл)\b/giu, 'open google')
+    .replace(/\b(google|гугл)(ni)?\s+(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\b/giu, 'close google')
+    .replace(/\b(yop|yoping|o['‘’`]?chir|to['‘’`]?xtat|yopib qo['‘’`]?y)\s+(google|гугл)\b/giu, 'close google')
     .replace(/\b(xabar yoz|xabar yubor|yozib yubor|telegramdan yoz|sms yoz|sms yubor)\b/giu, 'message on telegram')
     .replace(/\b(musiqa|qo['‘’`]?shiq|ashula)\s+(qo['‘’`]?y|yoq|ijro et)\b/giu, 'play music')
     .replace(/\b(.{2,80}?)\s+(qo['‘’`]?y|ijro et)\b/giu, (_match, query) => `play ${query}`);
@@ -786,7 +955,9 @@ function normalizeMultilingualCommand(text) {
     .replace(/(?:^|\s)(открой|запусти|включи)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' open telegram')
     .replace(/(?:^|\s)(закрой|выключи|останови)\s+(телеграм|телеграмм|telegram)(?=\s|$)/giu, ' close telegram')
     .replace(/(?:^|\s)(открой|запусти|включи)\s+(ютуб|youtube)(?=\s|$)/giu, ' open youtube')
+    .replace(/(?:^|\s)(закрой|выключи|останови)\s+(ютуб|youtube)(?=\s|$)/giu, ' close youtube')
     .replace(/(?:^|\s)(открой|запусти|включи)\s+(гугл|google)(?=\s|$)/giu, ' open google')
+    .replace(/(?:^|\s)(закрой|выключи|останови)\s+(гугл|google)(?=\s|$)/giu, ' close google')
     .replace(/(?:^|\s)(напиши|отправь)\s+(сообщение|смс|sms)(?=\s|$)/giu, ' message on telegram')
     .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(музыку|песню)(?=\s|$)/giu, ' play music')
     .replace(/(?:^|\s)(включи|поставь|проиграй)\s+(.{2,80})/giu, (_match, _verb, query) => ` play ${query}`);

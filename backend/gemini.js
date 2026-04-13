@@ -212,9 +212,19 @@ export async function geminiRepairTranscript(transcript) {
           parts: [{
             text: [
               'Repair this speech transcript.',
-              'Only fix accidental spaces split inside words, light ASR breakage, and obvious letter fragmentation.',
-              'Do not add new intent or facts.',
+              'Fix accidental spaces split inside words, light ASR breakage, mistaken spacing inside names, and obvious letter fragmentation across the whole sentence.',
+              'Preserve the user intent exactly. Never flip open into close, close into open, play into stop, or change the target device.',
+              'Do not add new intent, new facts, or extra commentary.',
               'Keep the same language as the user.',
+              'If a device name is partially broken, repair it as naturally as possible.',
+              'Examples:',
+              '- "pla y musi c on se cond com puter" -> "play music on second computer"',
+              '- "clo se YouTube on my sec ond comp uter" -> "close YouTube on my second computer"',
+              '- "o pen te le gram on my se cond com puter" -> "open telegram on my second computer"',
+              '- "ik kinchi kom pyut erda YouTube ni yopib qo y" -> "ikkinchi kompyuterda YouTube ni yopib qo y"',
+              '- "ob ha vo ma lu moti ni o zbe kis tonda top" -> "ob havo malumotini ozbekistonda top"',
+              '- "от крой те ле грам на вто ром ком пью те ре" -> "открой телеграм на втором компьютере"',
+              '- "за крой ю туб на вто ром ком пью те ре" -> "закрой ютуб на втором компьютере"',
               'Return only the corrected sentence, with no quotes or explanation.',
               `Transcript: ${JSON.stringify(input)}`
             ].join('\n')
