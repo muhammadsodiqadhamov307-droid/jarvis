@@ -646,7 +646,7 @@ async function executeCommandPlan(plan, address) {
         reply: plan.errorReply
       };
     }
-    return handleDesktopCommand(plan.text, plan.desktopIntent, address, plan.meta, plan.target, plan.requestedName);
+    return handleDesktopCommand(plan.text, plan.desktopIntent, address, plan.meta, plan.targets, plan.requestedNames);
   }
   return {};
 }
@@ -702,7 +702,7 @@ async function handleDeviceStatusCommand(text, address, meta = {}) {
   };
 }
 
-async function handleDesktopCommand(text, desktopIntent, address, meta = {}, targetOverride = null, requestedName = '') {
+async function handleDesktopCommand(text, desktopIntent, address, meta = {}, targetOverrides = [], requestedNames = []) {
   if (os.platform() !== 'win32') {
     const devices = (await listDevices()).filter((device) => device.status === 'approved');
     if (!devices.length) {
@@ -712,13 +712,13 @@ async function handleDesktopCommand(text, desktopIntent, address, meta = {}, tar
         reply: `No approved computer is linked yet, ${address}. Install the Windows agent, approve it in Devices, and I shall stop gesturing helplessly at the cloud.`
       };
     }
-    const targetDevice = targetOverride || chooseRemoteDevice(text, devices);
-    if (!targetDevice) {
-      if (requestedName) {
+    const targets = targetOverrides?.length ? targetOverrides : [chooseRemoteDevice(text, devices)].filter(Boolean);
+    if (!targets.length) {
+      if (requestedNames.length) {
         return {
           command: 'desktop:target-missing',
-          payload: { requested: requestedName, devices, intent: meta.intent || null },
-          reply: `I do not see a linked device named "${requestedName}", ${address}. Open Devices and approve it, or choose a different machine.`
+          payload: { requested: requestedNames, devices, intent: meta.intent || null },
+          reply: buildMissingDeviceReply(requestedNames, address)
         };
       }
       return {
@@ -727,34 +727,12 @@ async function handleDesktopCommand(text, desktopIntent, address, meta = {}, tar
         reply: `Which computer shall I use, ${address}? I see ${devices.map((device) => device.name).join(', ')}. Set one as default in Devices and I shall stop asking obvious questions.`
       };
     }
-    const reachability = getDeviceReachability(targetDevice);
-    if (!reachability.online) {
-      return {
-        command: 'desktop:remote-offline',
-        payload: { device: targetDevice, reachability, intent: meta.intent || null },
-        reply: `${targetDevice.name} is not reachable at the moment, ${address}. It is ${reachability.label}. I will not pretend to control a sleeping machine.`
-      };
-    }
-    const queued = await queueCommand(targetDevice.id, 'desktop_intent', { message: text, intent: meta.intent || null });
-    const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
-    if (completed?.status === 'success') {
-      return {
-        command: meta.source === 'nlp' ? 'desktop:nlp-remote-success' : 'desktop:remote-success',
-        payload: { device: targetDevice, queued, completed, intent: meta.intent || null },
-        reply: `Done on ${targetDevice.name}, ${address}.`
-      };
-    }
-    if (completed?.status === 'error') {
-      return {
-        command: meta.source === 'nlp' ? 'desktop:nlp-remote-error' : 'desktop:remote-error',
-        payload: { device: targetDevice, queued, completed, intent: meta.intent || null },
-        reply: `I could not complete that on ${targetDevice.name}, ${address}: ${completed.error || 'the agent reported an unspecified fault'}.`
-      };
-    }
+    const executions = await Promise.all(targets.map((device) => executeRemoteDesktopCommand(device, text, meta)));
+    const summary = summarizeRemoteExecutions(executions, address);
     return {
-      command: meta.source === 'nlp' ? 'desktop:nlp-remote-queued' : 'desktop:remote-queued',
-      payload: { device: targetDevice, queued, intent: meta.intent || null },
-      reply: `Command sent to ${targetDevice.name}, ${address}. I have not received the final report yet, which is inconvenient but not fatal.`
+      command: summary.command,
+      payload: { executions, intent: meta.intent || null },
+      reply: summary.reply
     };
   }
   const result = await executeDesktopIntent(desktopIntent);
@@ -781,22 +759,15 @@ function normalizeIntentCommandText(intent, fallbackText) {
 
 function buildDesktopPlan(text, desktopIntent, devices, { source = 'local', intent = null, explicitTargetDevice = '' } = {}) {
   const approved = (devices || []).filter((device) => device.status === 'approved');
-  const requestedName = resolveRequestedDeviceName(text, explicitTargetDevice);
-  let target = null;
-
-  if (approved.length) {
-    target = requestedName
-      ? findDeviceByName(requestedName, approved)
-      : chooseRemoteDevice(text, approved);
-  }
+  const selection = resolveTargetDevices(text, approved, explicitTargetDevice);
 
   return {
     kind: 'desktop',
     text,
     desktopIntent,
     meta: { source, intent },
-    target,
-    requestedName
+    targets: selection.targets,
+    requestedNames: selection.requestedNames
   };
 }
 
@@ -833,6 +804,135 @@ function findDeviceByName(requestedName, devices) {
       return target && normalizedRequested === target;
     });
   }) || null;
+}
+
+function resolveTargetDevices(text, devices, explicitTargetDevice = '') {
+  const requestedNames = [];
+  const matched = new Map();
+  const sourceText = String(text || '');
+
+  for (const name of splitRequestedDeviceNames(explicitTargetDevice)) {
+    requestedNames.push(name);
+    const match = findDeviceByName(name, devices);
+    if (match) matched.set(match.id, match);
+  }
+
+  for (const device of devices) {
+    const names = [device.name, device.metadata?.hostname, device.metadata?.username].filter(Boolean);
+    if (names.some((name) => deviceMentionedInText(sourceText, name))) {
+      matched.set(device.id, device);
+    }
+  }
+
+  const explicitSingle = resolveRequestedDeviceName(sourceText, explicitTargetDevice);
+  if (explicitSingle && !requestedNames.some((name) => normalizeDeviceText(name) === normalizeDeviceText(explicitSingle))) {
+    requestedNames.push(explicitSingle);
+    const match = findDeviceByName(explicitSingle, devices);
+    if (match) matched.set(match.id, match);
+  }
+
+  if (isAllDevicesRequest(sourceText)) {
+    return { targets: devices, requestedNames: devices.map((device) => device.name) };
+  }
+
+  if (isBothDevicesRequest(sourceText)) {
+    if (matched.size >= 2) return { targets: [...matched.values()], requestedNames };
+    if (devices.length === 2) return { targets: devices, requestedNames: devices.map((device) => device.name) };
+  }
+
+  if (matched.size) {
+    return { targets: [...matched.values()], requestedNames };
+  }
+
+  return { targets: [], requestedNames };
+}
+
+function splitRequestedDeviceNames(value) {
+  return String(value || '')
+    .split(/\s*(?:,| and | & | hamda | va | и )\s*/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function deviceMentionedInText(text, deviceName) {
+  const normalizedText = normalizeDeviceText(text);
+  const normalizedName = normalizeDeviceText(deviceName);
+  return Boolean(normalizedText && normalizedName && normalizedText.includes(normalizedName));
+}
+
+function isAllDevicesRequest(text) {
+  return /\b(all|every|each|hammasi|barchasi|все)\b/i.test(String(text || ''))
+    && /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|machine|machines|kompyuter|компьютер)\b/i.test(String(text || ''));
+}
+
+function isBothDevicesRequest(text) {
+  return /\b(both|ikkalasi|оба)\b/i.test(String(text || ''))
+    && /\b(device|devices|computer|computers|pc|pcs|laptop|laptops|machine|machines|kompyuter|компьютер)\b/i.test(String(text || ''));
+}
+
+async function executeRemoteDesktopCommand(device, text, meta) {
+  const reachability = getDeviceReachability(device);
+  if (!reachability.online) {
+    return {
+      status: 'offline',
+      device,
+      reachability
+    };
+  }
+
+  const queued = await queueCommand(device.id, 'desktop_intent', { message: text, intent: meta.intent || null });
+  const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
+  return {
+    status: completed?.status || 'queued',
+    device,
+    queued,
+    completed,
+    reachability
+  };
+}
+
+function summarizeRemoteExecutions(executions, address) {
+  const successes = executions.filter((item) => item.status === 'success');
+  const offline = executions.filter((item) => item.status === 'offline');
+  const errors = executions.filter((item) => item.status === 'error');
+  const queued = executions.filter((item) => item.status === 'queued');
+
+  if (successes.length === executions.length) {
+    return {
+      command: successes.length > 1 ? 'desktop:remote-multi-success' : 'desktop:remote-success',
+      reply: `Done on ${joinDeviceNames(successes.map((item) => item.device.name))}, ${address}.`
+    };
+  }
+
+  const parts = [];
+  if (successes.length) parts.push(`Completed on ${joinDeviceNames(successes.map((item) => item.device.name))}`);
+  if (offline.length) parts.push(`${joinDeviceNames(offline.map((item) => item.device.name))} ${offline.length === 1 ? 'is' : 'are'} offline`);
+  if (queued.length) parts.push(`still waiting on ${joinDeviceNames(queued.map((item) => item.device.name))}`);
+  if (errors.length) {
+    parts.push(errors.map((item) => `${item.device.name}: ${item.completed?.error || 'the agent reported an unspecified fault'}`).join('; '));
+  }
+
+  return {
+    command: 'desktop:remote-mixed',
+    reply: `${parts.join('. ')}, ${address}.`
+  };
+}
+
+function joinDeviceNames(names) {
+  const items = Array.from(new Set((names || []).filter(Boolean)));
+  if (!items.length) return 'no devices';
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items.at(-1)}`;
+}
+
+function buildMissingDeviceReply(requestedNames, address) {
+  const names = Array.from(new Set((requestedNames || []).filter(Boolean)));
+  if (!names.length) return `I do not see the requested device, ${address}.`;
+  if (names.length === 1) {
+    return `I do not see a linked device named "${names[0]}", ${address}.`;
+  }
+  return `I do not see linked devices named ${names.map((name) => `"${name}"`).join(', ')}, ${address}.`;
 }
 
 async function safeListDevices() {

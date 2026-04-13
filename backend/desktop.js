@@ -80,12 +80,12 @@ export function resolveDesktopIntent(raw) {
   const text = normalizeMultilingualDesktopIntent(String(raw || '').trim());
   const lower = text.toLowerCase();
   if (!text) return null;
-  if (isSearchLikeRequest(lower) && !isExplicitWeatherAppRequest(lower)) return null;
+  if (isSearchLikeRequest(lower) && !isExplicitWeatherAppRequest(lower) && !hasDeviceTargetCue(lower)) return null;
 
   const media = resolveMediaIntent(lower);
   if (media) return media;
 
-  const app = resolveAppIntent(lower);
+  const app = resolveAppIntent(lower, text);
   if (app) return app;
 
   const website = resolveWebsiteIntent(lower, text);
@@ -278,7 +278,7 @@ function resolveGeneralPlayIntent(lower, original) {
   };
 }
 
-function resolveAppIntent(lower) {
+function resolveAppIntent(lower, original = '') {
   const action = /\b(close|quit|exit|kill)\b/.test(lower) ? 'close_app' : 'open_app';
   if (action === 'open_app' && isMessagingIntent(lower)) {
     const app = APP_ALIASES.telegram;
@@ -297,10 +297,24 @@ function resolveAppIntent(lower) {
   if (!appKey) return null;
   const app = APP_ALIASES[appKey];
   if (app.url && action === 'close_app') return null;
+  if (app.url && action === 'open_app' && hasWebsiteSearchContent(appKey, original)) return null;
   if (app.url && action === 'open_app') {
     return { action: 'open_url', app: appKey, label: app.label, url: app.url };
   }
   return { action, app: appKey, label: app.label };
+}
+
+function hasWebsiteSearchContent(appKey, original) {
+  if (!original) return false;
+  if (appKey === 'google') {
+    const query = extractSearchQuery(original, /(google|look up|search the web for|search for|find me)/i);
+    return Boolean(query && !isBareOpenTarget(query, ['google']));
+  }
+  if (appKey === 'youtube') {
+    const query = extractSearchQuery(original, /(youtube|you tube|watch|play|find videos? (about|on)|search youtube for)/i);
+    return Boolean(query && !isBareOpenTarget(query, ['youtube', 'you tube']));
+  }
+  return false;
 }
 
 function isMessagingIntent(lower) {
@@ -332,10 +346,37 @@ function extractSearchQuery(text, triggerPattern) {
     .replace(/\b(jarvis|please|could you|can you|would you|i want you to|i want to|i need|open|go to|bring up|pull up|show me)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const withoutTrigger = cleaned.replace(triggerPattern, ' ').replace(/\s+/g, ' ').trim();
+  const withoutTrigger = stripDeviceQualifier(
+    cleaned.replace(triggerPattern, ' ').replace(/\s+/g, ' ').trim()
+  );
   if (!withoutTrigger || withoutTrigger.length < 2) return '';
   if (/^(open|go to|show me)$/.test(withoutTrigger.toLowerCase())) return '';
   return withoutTrigger;
+}
+
+function stripDeviceQualifier(text) {
+  let value = String(text || '').trim();
+  const trailingPatterns = [
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)\b\s*$/i,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)\b\s*$/iu,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:ikkinchi|birinchi|uchinchi|to['‘’`]?rtinchi|beshinchi)\s+kompyuter(?:da|ga|dan)?\b\s*$/iu,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:мой|моем|моему|моём|второй|втором|первый|первом|третий|третьем)\s+компьютер(?:е|у|ом)?\b\s*$/iu,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:default\s+device|default\s+computer)\b\s*$/i
+  ];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pattern of trailingPatterns) {
+      const next = value.replace(pattern, '').trim();
+      if (next !== value) {
+        value = next;
+        changed = true;
+      }
+    }
+  }
+
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function isBareOpenTarget(query, targets) {
@@ -370,6 +411,12 @@ function isSearchLikeRequest(lower) {
 
 function isExplicitWeatherAppRequest(lower) {
   return /\b(open|launch|start|run|close|quit|exit)\s+(?:the\s+)?weather\s+(?:app|application|program)\b/.test(lower);
+}
+
+function hasDeviceTargetCue(lower) {
+  return /\b(on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)?\s*(?:computer|pc|laptop|desktop|device)\b/i.test(lower)
+    || /\b(on|in|at|for)\s+(?:ikkinchi|birinchi|uchinchi|to['‘’`]?rtinchi|beshinchi)\s+kompyuter\b/iu.test(lower)
+    || /\b(on|in|at|for)\s+(?:второй|втором|первый|первом|третий|третьем)\s+компьютер(?:е)?\b/iu.test(lower);
 }
 
 function titleCase(text) {
