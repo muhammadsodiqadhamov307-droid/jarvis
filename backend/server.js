@@ -559,6 +559,17 @@ async function analyzeCommand(text, address) {
   if (confidentIntent) {
     const commandText = normalizeIntentCommandText(intent, text);
     if (intent.type === 'web_search') {
+      const explicitSiteIntent = resolveDesktopIntent(commandText);
+      if (explicitSiteIntent?.action === 'open_url' && isExplicitWebsiteCommand(commandText)) {
+        return {
+          text,
+          plan: buildDesktopPlan(commandText, explicitSiteIntent, devices, {
+            source: 'nlp',
+            intent,
+            explicitTargetDevice: intent.targetDevice
+          })
+        };
+      }
       return {
         text,
         plan: {
@@ -594,6 +605,14 @@ async function analyzeCommand(text, address) {
         };
       }
     }
+  }
+
+  const explicitLocalDesktopIntent = resolveDesktopIntent(text);
+  if (explicitLocalDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(text)) {
+    return {
+      text,
+      plan: buildDesktopPlan(text, explicitLocalDesktopIntent, devices, { source: 'local' })
+    };
   }
 
   if (isSearchRequest(text)) {
@@ -901,11 +920,12 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
   }
 
   if (desktopIntent.action === 'open_url') {
+    const openIntent = normalizeOpenUrlIntent(desktopIntent);
     return {
       type: 'open_url',
       payload: {
-        url: desktopIntent.url,
-        label: desktopIntent.label,
+        url: openIntent.url,
+        label: openIntent.label,
         intent: meta.intent || null
       }
     };
@@ -966,6 +986,62 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
     type: 'desktop_intent',
     payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
   };
+}
+
+function normalizeOpenUrlIntent(desktopIntent) {
+  const url = String(desktopIntent?.url || '').trim();
+  if (!url) return desktopIntent;
+
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      const rawQuery = parsed.searchParams.get('search_query') || '';
+      if (parsed.pathname === '/results' || rawQuery) {
+        const query = cleanRemoteSearchQuery(rawQuery, 'youtube');
+        return {
+          ...desktopIntent,
+          label: desktopIntent.label || 'YouTube',
+          url: query
+            ? `https://www.youtube.com/results?${new URLSearchParams({ search_query: query }).toString()}`
+            : 'https://www.youtube.com'
+        };
+      }
+    }
+
+    if (host === 'google.com') {
+      const rawQuery = parsed.searchParams.get('q') || '';
+      if (parsed.pathname === '/search' || rawQuery) {
+        const query = cleanRemoteSearchQuery(rawQuery, 'google');
+        return {
+          ...desktopIntent,
+          label: query ? (desktopIntent.label || 'Google search') : 'Google',
+          url: query
+            ? `https://www.google.com/search?${new URLSearchParams({ q: query }).toString()}`
+            : 'https://www.google.com'
+        };
+      }
+    }
+  } catch {
+    return desktopIntent;
+  }
+
+  return desktopIntent;
+}
+
+function cleanRemoteSearchQuery(query, site = '') {
+  let value = String(query || '')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)\s*(?:\d+|one|two|three|four|five)?\b/gi, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)\b/gi, ' ')
+    .replace(/\b(?:on|in|at|for)\s+[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)\b/giu, ' ')
+    .replace(/\b(search the web for|search for|find me|look for|show me)\b/gi, ' ')
+    .replace(/\b(open|play|put on|search|find|show|watch|google|youtube|you tube)\b/gi, ' ')
+    .replace(/\bweather information\b/gi, 'weather')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (site === 'youtube') value = value.toLowerCase();
+  return value;
 }
 
 function supportsStructuredRemote(device) {
@@ -1184,6 +1260,13 @@ function isSlowLookup(message) {
 function isSearchRequest(message) {
   return /^(search|web search|search online|look up|google)\b/i.test(message)
     || /\b(latest|news|weather|forecast|temperature|current|today|online|internet|what happened)\b/i.test(message);
+}
+
+function isExplicitWebsiteCommand(message) {
+  const lower = String(message || '').toLowerCase();
+  return /^google\b/.test(lower)
+    || /\b(?:open|play|watch|look for|search|find|show)\b.*\b(?:youtube|you tube|google)\b/.test(lower)
+    || /\b(?:youtube|you tube|google)\b.*\b(?:open|play|watch|look for|search|find|show)\b/.test(lower);
 }
 
 function isDeviceStatusRequest(message) {

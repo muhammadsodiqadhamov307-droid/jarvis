@@ -80,7 +80,7 @@ export function resolveDesktopIntent(raw) {
   const text = normalizeMultilingualDesktopIntent(String(raw || '').trim());
   const lower = text.toLowerCase();
   if (!text) return null;
-  if (isSearchLikeRequest(lower) && !isExplicitWeatherAppRequest(lower) && !hasDeviceTargetCue(lower)) return null;
+  if (isSearchLikeRequest(lower) && !isExplicitWeatherAppRequest(lower) && !hasDeviceTargetCue(lower) && !isExplicitSiteCommand(lower)) return null;
 
   const media = resolveMediaIntent(lower);
   if (media) return media;
@@ -237,33 +237,33 @@ function resolveWebsiteIntent(lower, original) {
   if (directPlay) return directPlay;
 
   if (/\b(play|put on)\b.*\b(music|song|songs?|lofi|lo-fi)\b/.test(lower)) {
-    const query = cleanMusicQuery(extractSearchQuery(original, /(play|put on|music|song|songs?|on youtube|youtube)/i)) || 'music';
+    const query = cleanMusicQuery(extractSearchQuery(original, /(play|put on|music|song|songs?)/i, { site: 'youtube' })) || 'music';
     return {
       action: 'open_url',
       label: 'YouTube music search',
-      url: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
+      url: buildYouTubeSearchUrl(query)
     };
   }
 
   if (/\b(youtube|you tube)\b/.test(lower)) {
-    const query = extractSearchQuery(original, /(youtube|you tube|watch|play|find videos? (about|on)|search youtube for)/i);
+    const query = extractSearchQuery(original, /(watch|play|look for|search(?: youtube)? for|find(?: videos?)?(?: about| on)?)/i, { site: 'youtube' });
     if (query && !isBareOpenTarget(query, ['youtube', 'you tube'])) {
       return {
         action: 'open_url',
         label: 'YouTube',
-        url: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
+        url: buildYouTubeSearchUrl(query)
       };
     }
     return { action: 'open_url', label: 'YouTube', url: APP_ALIASES.youtube.url };
   }
 
   if (/\b(google|look up|search the web|search for|find me)\b/.test(lower)) {
-    const query = extractSearchQuery(original, /(google|look up|search the web for|search for|find me)/i);
+    const query = extractSearchQuery(original, /(google|look up|search the web for|search for|find me|look for|find)/i, { site: 'google' });
     if (query && !isBareOpenTarget(query, ['google'])) {
       return {
         action: 'open_url',
         label: 'Google search',
-        url: `https://www.google.com/search?q=${encodeURIComponent(query)}`
+        url: buildGoogleSearchUrl(query)
       };
     }
     if (/\bgoogle\b/.test(lower)) return { action: 'open_url', label: 'Google', url: APP_ALIASES.google.url };
@@ -282,7 +282,7 @@ function resolveGeneralPlayIntent(lower, original) {
   return {
     action: 'open_url',
     label: 'YouTube',
-    url: `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanMusicQuery(query) || query)}`
+    url: buildYouTubeSearchUrl(cleanMusicQuery(query) || query)
   };
 }
 
@@ -323,11 +323,11 @@ function resolveAppIntent(lower, original = '') {
 function hasWebsiteSearchContent(appKey, original) {
   if (!original) return false;
   if (appKey === 'google') {
-    const query = extractSearchQuery(original, /(google|look up|search the web for|search for|find me)/i);
+    const query = extractSearchQuery(original, /(google|look up|search the web for|search for|find me|look for|find)/i, { site: 'google' });
     return Boolean(query && !isBareOpenTarget(query, ['google']));
   }
   if (appKey === 'youtube') {
-    const query = extractSearchQuery(original, /(youtube|you tube|watch|play|find videos? (about|on)|search youtube for)/i);
+    const query = extractSearchQuery(original, /(watch|play|look for|search(?: youtube)? for|find(?: videos?)?(?: about| on)?)/i, { site: 'youtube' });
     return Boolean(query && !isBareOpenTarget(query, ['youtube', 'you tube']));
   }
   return false;
@@ -357,22 +357,23 @@ function resolveGeneralAppIntent(original, lower) {
   };
 }
 
-function extractSearchQuery(text, triggerPattern) {
-  const cleaned = text
-    .replace(/\b(jarvis|please|could you|can you|would you|i want you to|i want to|i need|open|go to|bring up|pull up|show me)\b/gi, ' ')
+function extractSearchQuery(text, triggerPattern, { site = '' } = {}) {
+  const withoutDevice = stripDeviceQualifier(text);
+  const cleaned = stripAssistantAddress(withoutDevice)
+    .replace(/\b(please|could you|can you|would you|i want you to|i want to|i need|go to|bring up|pull up)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const withoutTrigger = stripDeviceQualifier(
-    cleaned.replace(triggerPattern, ' ').replace(/\s+/g, ' ').trim()
-  );
-  if (!withoutTrigger || withoutTrigger.length < 2) return '';
-  if (/^(open|go to|show me)$/.test(withoutTrigger.toLowerCase())) return '';
-  return withoutTrigger;
+  const withoutTrigger = replaceAllPattern(cleaned, triggerPattern, ' ');
+  const query = cleanSearchQuery(withoutTrigger, site);
+  if (!query || query.length < 2) return '';
+  if (/^(open|go to|show me|search|find|look for)$/.test(query.toLowerCase())) return '';
+  return query;
 }
 
 function stripDeviceQualifier(text) {
   let value = String(text || '').trim();
   const trailingPatterns = [
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)\s*(?:\d+|one|two|three|four|five)?\b\s*$/i,
     /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)\b\s*$/i,
     /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)\b\s*$/iu,
     /(?:^|\s)\b(?:on|in|at|for)\s+(?:ikkinchi|birinchi|uchinchi|to['‘’`]?rtinchi|beshinchi)\s+kompyuter(?:da|ga|dan)?\b\s*$/iu,
@@ -393,6 +394,47 @@ function stripDeviceQualifier(text) {
   }
 
   return value.replace(/\s+/g, ' ').trim();
+}
+
+function stripAssistantAddress(text) {
+  return String(text || '')
+    .replace(/^(?:hey\s+)?jarvis[,\s]+/i, ' ')
+    .replace(/[,\s]+jarvis[.?!]*$/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function replaceAllPattern(text, pattern, replacement) {
+  if (!pattern) return text;
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  return String(text || '').replace(new RegExp(pattern.source, flags), replacement).replace(/\s+/g, ' ').trim();
+}
+
+function cleanSearchQuery(text, site = '') {
+  let value = String(text || '')
+    .replace(/\b(search the web for|search for|find me|look for|show me)\b/gi, ' ')
+    .replace(/\b(open|play|put on|search|find|show|watch)\b/gi, ' ')
+    .replace(/\b(on|in|at|for)\s+(youtube|you tube|google)\b/gi, ' ')
+    .replace(/\b(youtube|you tube|google)\b/gi, ' ')
+    .replace(/\b(on|in|at|for)\b\s*$/gi, ' ')
+    .replace(/\bweather information\b/gi, 'weather')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (site === 'youtube') value = value.toLowerCase();
+  return value;
+}
+
+function buildYouTubeSearchUrl(query) {
+  const q = cleanSearchQuery(query, 'youtube');
+  if (!q) return APP_ALIASES.youtube.url;
+  return `https://www.youtube.com/results?${new URLSearchParams({ search_query: q }).toString()}`;
+}
+
+function buildGoogleSearchUrl(query) {
+  const q = cleanSearchQuery(query, 'google');
+  if (!q) return APP_ALIASES.google.url;
+  return `https://www.google.com/search?${new URLSearchParams({ q }).toString()}`;
 }
 
 function isBareOpenTarget(query, targets) {
@@ -423,6 +465,10 @@ function isBlockedGenericAppName(name) {
 function isSearchLikeRequest(lower) {
   return /\b(latest|news|weather|forecast|temperature|current|today|online|internet|what happened)\b/.test(lower)
     || /^(search|web search|search online|look up|google)\b/.test(lower);
+}
+
+function isExplicitSiteCommand(lower) {
+  return /\b(youtube|you tube)\b/i.test(lower) || /^(open\s+)?google\b/i.test(lower);
 }
 
 function isExplicitWeatherAppRequest(lower) {

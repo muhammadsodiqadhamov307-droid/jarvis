@@ -124,6 +124,12 @@ Important:
 - If the user names a target app or site after an open/close/play verb, keep that target in normalizedText.
 - If the user says "close YouTube on my second computer", normalizedText should stay close-oriented and target "my second computer".
 - If the user asks to search for weather/news/latest/current information, do not rewrite that as a desktop command.
+- For desktop YouTube or Google commands, keep normalizedText executable, but keep query as content only.
+- For "open YouTube" or "open Google" with no extra content, query must be empty.
+- For YouTube or Google search commands, query must not include youtube, google, open, play, look for, search, find, show, device names, or device phrases such as "on my computer".
+- Examples: "play JARVIS videos on YouTube" -> type desktop, normalizedText "play JARVIS videos on YouTube", query "JARVIS videos".
+- Examples: "open YouTube on computer 1" -> type desktop, normalizedText "open YouTube on computer 1", query "", targetDevice "computer 1".
+- Examples: "google weather information in Uzbekistan on my second computer" -> type desktop, normalizedText "google weather in Uzbekistan on my second computer", query "weather in Uzbekistan", targetDevice "my second computer".
 
 Return this JSON shape:
 {
@@ -143,11 +149,25 @@ function normalizeIntent(value) {
   if (!value || typeof value !== 'object') return null;
   const type = INTENT_TYPES.has(value.type) ? value.type : 'none';
   const confidence = Math.max(0, Math.min(1, Number(value.confidence || 0)));
+  const query = type === 'desktop' ? cleanDesktopIntentQuery(value.query) : String(value.query || '').trim();
   return {
     type,
     confidence,
     normalizedText: String(value.normalizedText || '').trim(),
-    query: String(value.query || '').trim(),
+    query,
     targetDevice: String(value.targetDevice || '').trim()
   };
+}
+
+function cleanDesktopIntentQuery(query) {
+  let value = String(query || '')
+    .replace(/\b(search the web for|search for|find me|look for|show me)\b/gi, ' ')
+    .replace(/\b(open|play|put on|search|find|show|watch|google|youtube|you tube)\b/gi, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)?\s*(?:computer|pc|laptop|desktop|device)\s*(?:\d+|one|two|three|four|five)?\b/gi, ' ')
+    .replace(/\b(?:on|in|at|for)\s+[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)\b/giu, ' ')
+    .replace(/\bweather information\b/gi, 'weather')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/^(youtube|you tube|google)$/i.test(value)) return '';
+  return value;
 }
