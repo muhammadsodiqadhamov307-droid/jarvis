@@ -38,17 +38,30 @@ export async function parseCommand(rawText, timeoutMs = Number(process.env.GEMIN
   const text = String(rawText || '').trim();
   if (!text) return null;
 
-  const model = process.env.GEMINI_INTENT_MODEL || 'gemini-flash-lite-latest';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
   const controller = new AbortController();
   const timeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : 1800;
   const timer = setTimeout(() => controller.abort(), timeout);
 
   try {
+    for (const model of getParserModels()) {
+      const result = await parseWithModel(model, text, controller.signal);
+      if (result) return result;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function parseWithModel(model, text, signal) {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
+      signal,
       body: JSON.stringify({
         systemInstruction: {
           parts: [{ text: PARSER_SYSTEM_PROMPT }]
@@ -74,9 +87,20 @@ export async function parseCommand(rawText, timeoutMs = Number(process.env.GEMIN
     return normalizeParsedCommand(JSON.parse(cleanJson(raw)));
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+function getParserModels() {
+  const models = [
+    process.env.GEMINI_INTENT_MODEL,
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash-lite',
+    'gemini-2-flash',
+    'gemini-2.5-flash',
+    process.env.GEMINI_TEXT_MODEL,
+    ...(process.env.GEMINI_INTENT_FALLBACK_MODELS || '').split(',')
+  ];
+  return [...new Set(models.map((model) => String(model || '').trim()).filter(Boolean))];
 }
 
 function cleanJson(raw) {
@@ -99,7 +123,7 @@ function normalizeParsedCommand(value) {
   return {
     action,
     appOrSite,
-    searchQuery: cleanNullable(value.searchQuery),
+    searchQuery: sanitizeSearchQuery(cleanNullable(value.searchQuery), appOrSite, action),
     devices: devices.map((device) => String(device || '').trim()).filter(Boolean).length
       ? devices.map((device) => String(device || '').trim()).filter(Boolean)
       : ['default'],
@@ -112,6 +136,34 @@ function cleanNullable(value) {
   const text = String(value ?? '').trim();
   if (!text || /^null$/i.test(text)) return null;
   return text;
+}
+
+function sanitizeSearchQuery(query, appOrSite, action) {
+  let value = String(query || '')
+    .replace(/\b(?:on|in|at|for)\s+(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b/giu, ' ')
+    .replace(/\b(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)s?\s*(?:\d+|one|two|three|four|five)?\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)s?\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)s?\b/giu, ' ')
+    .replace(/\b(?:youtube|you tube|google)\b/giu, ' ')
+    .replace(/\b(?:open|play|put on|search|find|show|watch|look for|google|youtube)\b/giu, ' ')
+    .replace(/\bweather information\b/giu, 'weather')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (isDeviceOnlyQuery(value)) value = '';
+  if (!value && action === 'open' && (appOrSite === 'youtube' || appOrSite === 'google')) return null;
+  return value || null;
+}
+
+function isDeviceOnlyQuery(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  return /^(?:on|in|at|for|my|the|both|all|of|default|first|second|third|fourth|fifth|computer|computers|pc|pcs|laptop|laptops|desktop|desktops|device|devices|\d+|one|two|three|four|five|\s)+$/iu.test(normalized);
 }
 
 const PARSER_SYSTEM_PROMPT = `You are a command parser for a voice assistant called JARVIS.

@@ -373,9 +373,11 @@ function extractSearchQuery(text, triggerPattern, { site = '' } = {}) {
 function stripDeviceQualifier(text) {
   let value = String(text || '').trim();
   const trailingPatterns = [
-    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)\s*(?:\d+|one|two|three|four|five)?\b\s*$/i,
-    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)\b\s*$/i,
-    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)\b\s*$/iu,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b\s*$/i,
+    /(?:^|\s)\b(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b\s*$/i,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)s?\s*(?:\d+|one|two|three|four|five)?\b\s*$/i,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)s?\b\s*$/i,
+    /(?:^|\s)\b(?:on|in|at|for)\s+(?:my\s+)?[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)s?\b\s*$/iu,
     /(?:^|\s)\b(?:on|in|at|for)\s+(?:ikkinchi|birinchi|uchinchi|to['‘’`]?rtinchi|beshinchi)\s+kompyuter(?:da|ga|dan)?\b\s*$/iu,
     /(?:^|\s)\b(?:on|in|at|for)\s+(?:мой|моем|моему|моём|второй|втором|первый|первом|третий|третьем)\s+компьютер(?:е|у|ом)?\b\s*$/iu,
     /(?:^|\s)\b(?:on|in|at|for)\s+(?:default\s+device|default\s+computer)\b\s*$/i
@@ -412,6 +414,11 @@ function replaceAllPattern(text, pattern, replacement) {
 
 function cleanSearchQuery(text, site = '') {
   let value = String(text || '')
+    .replace(/\b(?:on|in|at|for)\s+(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b/giu, ' ')
+    .replace(/\b(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)s?\s*(?:\d+|one|two|three|four|five)?\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)s?\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)s?\b/giu, ' ')
     .replace(/\b(search the web for|search for|find me|look for|show me)\b/gi, ' ')
     .replace(/\b(open|play|put on|search|find|show|watch)\b/gi, ' ')
     .replace(/\b(on|in|at|for)\s+(youtube|you tube|google)\b/gi, ' ')
@@ -421,8 +428,19 @@ function cleanSearchQuery(text, site = '') {
     .replace(/\s+/g, ' ')
     .trim();
 
+  if (isDeviceOnlySearchQuery(value)) value = '';
   if (site === 'youtube') value = value.toLowerCase();
   return value;
+}
+
+function isDeviceOnlySearchQuery(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  return /^(?:on|in|at|for|my|the|both|all|of|default|first|second|third|fourth|fifth|computer|computers|pc|pcs|laptop|laptops|desktop|desktops|device|devices|\d+|one|two|three|four|five|\s)+$/iu.test(normalized);
 }
 
 function buildYouTubeSearchUrl(query) {

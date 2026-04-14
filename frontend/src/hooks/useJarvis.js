@@ -44,7 +44,7 @@ export function useJarvis() {
   }, []);
 
   const handleLiveTranscript = useCallback((role, text) => {
-    const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+    const cleaned = stripControllerResultMarker(String(text || '').replace(/\s+/g, ' ').trim());
     if (!cleaned) return;
 
     const transcript = liveTranscriptRef.current;
@@ -259,7 +259,7 @@ export function useJarvis() {
         voice.sendLiveText?.(`Read this verified web result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
       }
       if (reply && (meta?.command?.startsWith('desktop') || meta?.command?.startsWith('devices'))) {
-        voice.sendLiveText?.(`VERIFIED_CONTROLLER_RESULT: ${reply}`);
+        voice.sendLiveText?.(`Say exactly this verified controller result and nothing else: ${reply}`);
       }
     } catch (error) {
       const reply = `A fault has occurred, ${address}: ${error.message}. I remain composed, naturally.`;
@@ -289,6 +289,10 @@ export function useJarvis() {
     searchResults,
     voice
   }), [address, deleteNote, input, liveReady, messages, notes, refreshNotes, searchResults, sendMessage, status, voice]);
+}
+
+function stripControllerResultMarker(text) {
+  return String(text || '').replace(/^VERIFIED_CONTROLLER_RESULT:\s*/i, '').trim();
 }
 
 function isDuplicateTranscript(existing, incoming) {

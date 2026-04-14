@@ -600,7 +600,7 @@ function buildPlanFromParsedCommand(rawText, parsed, devices) {
 
 function buildDesktopIntentFromParsed(parsed) {
   const app = parsed.appOrSite || (parsed.action === 'play' ? 'youtube' : null);
-  const query = String(parsed.searchQuery || '').trim();
+  const query = cleanRemoteSearchQuery(parsed.searchQuery, app);
 
   if (app === 'youtube' && ['open', 'play', 'search'].includes(parsed.action)) {
     return {
@@ -1240,16 +1240,29 @@ function normalizeOpenUrlIntent(desktopIntent) {
 
 function cleanRemoteSearchQuery(query, site = '') {
   let value = String(query || '')
-    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)\s*(?:\d+|one|two|three|four|five)?\b/gi, ' ')
-    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)\b/gi, ' ')
-    .replace(/\b(?:on|in|at|for)\s+[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b/giu, ' ')
+    .replace(/\b(?:both\s+(?:of\s+the\s+)?|all\s+(?:of\s+the\s+)?)(?:computers?|pcs?|laptops?|desktops?|devices?)\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:computer|pc|laptop|desktop|device)s?\s*(?:\d+|one|two|three|four|five)?\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+(?:my\s+)?(?:default\s+)?(?:first|second|third|fourth|fifth|another)\s+(?:computer|pc|laptop|desktop|device)s?\b/giu, ' ')
+    .replace(/\b(?:on|in|at|for)\s+[\p{L}\p{N}\s-]{1,30}\s+(?:computer|pc|laptop|desktop|device)s?\b/giu, ' ')
     .replace(/\b(search the web for|search for|find me|look for|show me)\b/gi, ' ')
     .replace(/\b(open|play|put on|search|find|show|watch|google|youtube|you tube)\b/gi, ' ')
     .replace(/\bweather information\b/gi, 'weather')
     .replace(/\s+/g, ' ')
     .trim();
+  if (isDeviceOnlyRemoteSearchQuery(value)) value = '';
   if (site === 'youtube') value = value.toLowerCase();
   return value;
+}
+
+function isDeviceOnlyRemoteSearchQuery(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  return /^(?:on|in|at|for|my|the|both|all|of|default|first|second|third|fourth|fifth|computer|computers|pc|pcs|laptop|laptops|desktop|desktops|device|devices|\d+|one|two|three|four|five|\s)+$/iu.test(normalized);
 }
 
 function supportsStructuredRemote(device) {
