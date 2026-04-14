@@ -259,7 +259,7 @@ export function useJarvis() {
         voice.sendLiveText?.(`Read this verified web result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
       }
       if (reply && (meta?.command?.startsWith('desktop') || meta?.command?.startsWith('devices'))) {
-        voice.sendLiveText?.(`Report this completed controller result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
+        voice.sendLiveText?.(`VERIFIED_CONTROLLER_RESULT: ${reply}`);
       }
     } catch (error) {
       const reply = `A fault has occurred, ${address}: ${error.message}. I remain composed, naturally.`;

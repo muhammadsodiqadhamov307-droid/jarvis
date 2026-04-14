@@ -19,6 +19,7 @@ import { appendToNote, createNote, deleteNote, listNotes } from './notes.js';
 import { webSearch } from './search.js';
 import { desktopReply, executeDesktopIntent, resolveDesktopIntent } from './desktop.js';
 import { classifyIntent } from './intent.js';
+import { parseCommand } from './parser.js';
 import { formatUserDateTime, getUserTimeContext } from './time.js';
 import { getSettingsForClient, updateSettings } from './settings.js';
 import { getStartupStatus, setStartupEnabled } from './startup.js';
@@ -316,7 +317,7 @@ app.post('/api/chat', async (req, res, next) => {
     let reply = commandResult.reply;
 
     if (!reply) {
-      reply = await geminiText(message, address);
+      reply = await geminiText(commandResult.chatPrompt || message, address);
     }
 
     if (!reply) {
@@ -364,14 +365,15 @@ app.post('/api/chat-stream', async (req, res, next) => {
 
     let reply = '';
     if (process.env.GEMINI_API_KEY) {
-      for await (const delta of geminiTextStream(message, address)) {
+      const chatPrompt = commandResult.chatPrompt || message;
+      for await (const delta of geminiTextStream(chatPrompt, address)) {
         reply += delta;
         writeStreamEvent(res, 'delta', { text: delta });
       }
     }
 
     if (!reply.trim()) {
-      reply = await geminiText(message, address);
+      reply = await geminiText(commandResult.chatPrompt || message, address);
       if (reply) writeStreamEvent(res, 'delta', { text: reply });
     }
 
@@ -442,6 +444,19 @@ initDatabase()
   });
 
 async function handleCommand(message, address) {
+  const parsed = await parseCommand(message);
+  if (parsed) {
+    const parsedResult = await handleParsedCommand(message, parsed, address);
+    if (parsedResult) return parsedResult;
+    if (shouldPassParsedCommandToChat(parsed)) {
+      return {
+        command: `parser:${parsed.action}`,
+        payload: { parsed },
+        chatPrompt: parsed.rawIntent || message
+      };
+    }
+  }
+
   const text = await normalizeIncomingCommand(message);
 
   const remember = text.match(/remember that\s+(.+)/i);
@@ -535,6 +550,172 @@ async function handleCommand(message, address) {
   }
 
   return {};
+}
+
+async function handleParsedCommand(rawText, parsed, address) {
+  const devices = await safeListDevices();
+  const plan = buildPlanFromParsedCommand(rawText, parsed, devices);
+  if (!plan) return null;
+  return executeCommandPlan(plan, address);
+}
+
+function shouldPassParsedCommandToChat(parsed) {
+  return ['remember', 'forget', 'notes', 'time', 'calculate', 'none'].includes(parsed.action);
+}
+
+function buildPlanFromParsedCommand(rawText, parsed, devices) {
+  if (!parsed || parsed.action === 'none') return null;
+
+  if (['weather', 'news'].includes(parsed.action) || (parsed.action === 'search' && !parsed.appOrSite)) {
+    return {
+      kind: 'search',
+      query: parsed.searchQuery || parsed.rawIntent || rawText,
+      originalText: rawText,
+      meta: { source: 'parser', parser: parsed }
+    };
+  }
+
+  if (parsed.action === 'status') {
+    return {
+      kind: 'device_status',
+      text: parsed.rawIntent || rawText,
+      meta: { source: 'parser', parser: parsed }
+    };
+  }
+
+  const desktopIntent = buildDesktopIntentFromParsed(parsed);
+  if (!desktopIntent) return null;
+
+  const approved = (devices || []).filter((device) => device.status === 'approved');
+  const selection = resolveParsedTargetDevices(parsed.devices, approved);
+  return {
+    kind: 'desktop',
+    text: parsed.rawIntent || rawText,
+    desktopIntent,
+    meta: { source: 'parser', parser: parsed },
+    targets: selection.targets,
+    requestedNames: selection.requestedNames
+  };
+}
+
+function buildDesktopIntentFromParsed(parsed) {
+  const app = parsed.appOrSite || (parsed.action === 'play' ? 'youtube' : null);
+  const query = String(parsed.searchQuery || '').trim();
+
+  if (app === 'youtube' && ['open', 'play', 'search'].includes(parsed.action)) {
+    return {
+      action: 'open_url',
+      label: 'YouTube',
+      url: query
+        ? `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`
+        : 'https://www.youtube.com'
+    };
+  }
+
+  if (app === 'google' && ['open', 'search'].includes(parsed.action)) {
+    return {
+      action: 'open_url',
+      label: query ? 'Google search' : 'Google',
+      url: query
+        ? `https://www.google.com/search?q=${encodeURIComponent(query)}`
+        : 'https://www.google.com'
+    };
+  }
+
+  if (parsed.action === 'close' && (app === 'youtube' || app === 'google')) {
+    return {
+      action: 'close_url',
+      label: app === 'youtube' ? 'YouTube' : 'Google'
+    };
+  }
+
+  if (isNativeParsedApp(app)) {
+    return {
+      action: parsed.action === 'close' ? 'close_app' : 'open_app',
+      app,
+      label: nativeAppLabel(app)
+    };
+  }
+
+  if (parsed.action === 'media') {
+    return resolveDesktopIntent(parsed.rawIntent || 'play pause') || {
+      action: 'media_key',
+      key: 'play_pause',
+      label: 'Toggling playback'
+    };
+  }
+
+  return null;
+}
+
+function isNativeParsedApp(app) {
+  return ['telegram', 'chrome', 'spotify', 'vscode', 'notepad', 'explorer', 'calculator', 'word', 'excel', 'obs'].includes(app);
+}
+
+function nativeAppLabel(app) {
+  const labels = {
+    telegram: 'Telegram',
+    chrome: 'Chrome',
+    spotify: 'Spotify',
+    vscode: 'VS Code',
+    notepad: 'Notepad',
+    explorer: 'File Explorer',
+    calculator: 'Calculator',
+    word: 'Microsoft Word',
+    excel: 'Microsoft Excel',
+    obs: 'OBS Studio'
+  };
+  return labels[app] || app;
+}
+
+function resolveParsedTargetDevices(parsedDevices = [], approvedDevices = []) {
+  const tokens = (Array.isArray(parsedDevices) && parsedDevices.length ? parsedDevices : ['default'])
+    .map((device) => String(device || '').trim())
+    .filter(Boolean);
+  const requestedNames = [];
+  const matched = new Map();
+  const defaultDevice = approvedDevices.find((device) => device.is_default) || approvedDevices[0] || null;
+
+  const addDevice = (device) => {
+    if (device) matched.set(device.id, device);
+  };
+
+  for (const token of tokens) {
+    const normalized = normalizeDeviceText(token);
+    if (!normalized || normalized === 'default') {
+      addDevice(defaultDevice);
+      continue;
+    }
+    if (normalized === 'all') {
+      approvedDevices.forEach(addDevice);
+      continue;
+    }
+    if (normalized === 'both') {
+      approvedDevices.slice(0, 2).forEach(addDevice);
+      requestedNames.push(token);
+      continue;
+    }
+    if (normalized === 'my computer') {
+      addDevice(findDeviceByName(token, approvedDevices) || defaultDevice);
+      requestedNames.push(token);
+      continue;
+    }
+
+    const ordinal = normalized.match(/^computer ([1-9]\d*)$/);
+    if (ordinal) {
+      addDevice(findDeviceByName(token, approvedDevices) || approvedDevices[Number(ordinal[1]) - 1]);
+      requestedNames.push(token);
+      continue;
+    }
+
+    requestedNames.push(token);
+    addDevice(findDeviceByName(token, approvedDevices));
+  }
+
+  return {
+    targets: [...matched.values()],
+    requestedNames: requestedNames.filter((name) => !findDeviceByName(name, approvedDevices))
+  };
 }
 
 async function normalizeIncomingCommand(message) {
@@ -678,7 +859,7 @@ async function handleSearchCommand(query, originalText, address, meta = {}) {
   } catch (error) {
     return {
       command: meta.source === 'nlp' ? 'search:nlp-error' : 'search:error',
-      payload: { query: searchQuery || originalText, error: error.message, intent: meta.intent || null },
+      payload: { query: searchQuery || originalText, error: error.message, intent: meta.intent || null, parser: meta.parser || null },
       reply: `I could not complete the web search just now, ${address}: ${error.message}. The network appears to be behaving like it has opinions.`
     };
   }
@@ -687,13 +868,13 @@ async function handleSearchCommand(query, originalText, address, meta = {}) {
     const first = results.answer || results.results?.[0]?.snippet || 'I found results, but they are being coy.';
     return {
       command: 'search',
-      payload: { ...results, intent: meta.intent || null },
+      payload: { ...results, intent: meta.intent || null, parser: meta.parser || null },
       reply: `${first} I have placed the sources on screen, ${address}.`
     };
   }
   return {
     command: 'search:unconfigured',
-    payload: { ...results, intent: meta.intent || null },
+    payload: { ...results, intent: meta.intent || null, parser: meta.parser || null },
     reply: `Web search is not configured yet, ${address}. Add a Tavily or SerpAPI key and I shall stop pretending the internet is a rumour.`
   };
 }
@@ -701,6 +882,28 @@ async function handleSearchCommand(query, originalText, address, meta = {}) {
 async function handleDeviceStatusCommand(text, address, meta = {}) {
   const devices = await listDevices();
   const approved = devices.filter((device) => device.status === 'approved');
+  const parsedDeviceTokens = Array.isArray(meta.parser?.devices) ? meta.parser.devices : [];
+  const parsedWantsSpecificDevice = parsedDeviceTokens.some((token) => {
+    const normalized = normalizeDeviceText(token);
+    return normalized && normalized !== 'default';
+  });
+
+  if (parsedWantsSpecificDevice) {
+    const selection = resolveParsedTargetDevices(parsedDeviceTokens, approved);
+    if (!selection.targets.length) {
+      return {
+        command: 'devices:target-missing',
+        payload: { requested: selection.requestedNames, devices: approved, intent: meta.intent || null, parser: meta.parser || null },
+        reply: buildMissingDeviceReply(selection.requestedNames, address)
+      };
+    }
+    return {
+      command: 'devices:parser-status',
+      payload: { devices: selection.targets, intent: meta.intent || null, parser: meta.parser || null },
+      reply: buildDeviceStatusReply(selection.targets, address, selection.targets.length === 1)
+    };
+  }
+
   const requestedName = resolveRequestedDeviceName(text, meta.intent?.targetDevice || '');
   const selected = requestedName
     ? findDeviceByName(requestedName, approved)
@@ -747,7 +950,7 @@ async function handleDesktopCommand(text, desktopIntent, address, meta = {}, tar
       };
     }
     const executions = await Promise.all(targets.map((device) => executeRemoteDesktopCommand(device, text, desktopIntent, meta)));
-    const summary = summarizeRemoteExecutions(executions, address);
+    const summary = summarizeRemoteExecutions(executions, address, meta);
     return {
       command: summary.command,
       payload: { executions, intent: meta.intent || null },
@@ -915,18 +1118,19 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
   if (!desktopIntent || !desktopIntent.action) {
     return {
       type: 'desktop_intent',
-      payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+      payload: { message: meta.intent?.normalizedText || meta.parser?.rawIntent || text, intent: meta.intent || null, parser: meta.parser || null }
     };
   }
 
   if (desktopIntent.action === 'open_url') {
-    const openIntent = normalizeOpenUrlIntent(desktopIntent);
+    const openIntent = meta.parser ? desktopIntent : normalizeOpenUrlIntent(desktopIntent);
     return {
       type: 'open_url',
       payload: {
         url: openIntent.url,
         label: openIntent.label,
-        intent: meta.intent || null
+        intent: meta.intent || null,
+        parser: meta.parser || null
       }
     };
   }
@@ -935,14 +1139,15 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
     if (!supportsStructuredRemote(device)) {
       return {
         type: 'desktop_intent',
-        payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+        payload: { message: meta.intent?.normalizedText || meta.parser?.rawIntent || text, intent: meta.intent || null, parser: meta.parser || null }
       };
     }
     return {
       type: 'close_url',
       payload: {
         label: desktopIntent.label,
-        intent: meta.intent || null
+        intent: meta.intent || null,
+        parser: meta.parser || null
       }
     };
   }
@@ -954,7 +1159,8 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
         app: desktopIntent.app,
         label: desktopIntent.label,
         appName: desktopIntent.appName,
-        intent: meta.intent || null
+        intent: meta.intent || null,
+        parser: meta.parser || null
       }
     };
   }
@@ -966,7 +1172,8 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
         app: desktopIntent.app,
         label: desktopIntent.label,
         appName: desktopIntent.appName,
-        intent: meta.intent || null
+        intent: meta.intent || null,
+        parser: meta.parser || null
       }
     };
   }
@@ -977,14 +1184,15 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
       payload: {
         key: desktopIntent.key,
         label: desktopIntent.label,
-        intent: meta.intent || null
+        intent: meta.intent || null,
+        parser: meta.parser || null
       }
     };
   }
 
   return {
     type: 'desktop_intent',
-    payload: { message: meta.intent?.normalizedText || text, intent: meta.intent || null }
+    payload: { message: meta.intent?.normalizedText || meta.parser?.rawIntent || text, intent: meta.intent || null, parser: meta.parser || null }
   };
 }
 
@@ -1065,31 +1273,99 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function summarizeRemoteExecutions(executions, address) {
+function summarizeRemoteExecutions(executions, address, meta = {}) {
   const successes = executions.filter((item) => item.status === 'success');
   const offline = executions.filter((item) => item.status === 'offline');
-  const errors = executions.filter((item) => item.status === 'error');
+  const errors = executions.filter((item) => item.status === 'error' || item.status === 'cancelled');
   const queued = executions.filter((item) => item.status === 'queued');
 
   if (successes.length === executions.length) {
     return {
       command: successes.length > 1 ? 'desktop:remote-multi-success' : 'desktop:remote-success',
-      reply: `Done on ${joinDeviceNames(successes.map((item) => item.device.name))}, ${address}.`
+      reply: buildRemoteSuccessReply(successes, address, meta)
     };
   }
 
   const parts = [];
-  if (successes.length) parts.push(`Completed on ${joinDeviceNames(successes.map((item) => item.device.name))}`);
+  if (successes.length) parts.push(stripAddress(buildRemoteSuccessReply(successes, address, meta), address));
   if (offline.length) parts.push(`${joinDeviceNames(offline.map((item) => item.device.name))} ${offline.length === 1 ? 'is' : 'are'} offline`);
   if (queued.length) parts.push(`still waiting on ${joinDeviceNames(queued.map((item) => item.device.name))}`);
   if (errors.length) {
-    parts.push(errors.map((item) => `${item.device.name}: ${item.completed?.error || 'the agent reported an unspecified fault'}`).join('; '));
+    parts.push(errors.map((item) => `Could not complete that on ${item.device.name}`).join('; '));
   }
 
   return {
     command: 'desktop:remote-mixed',
     reply: `${parts.join('. ')}, ${address}.`
   };
+}
+
+function buildRemoteSuccessReply(executions, address, meta = {}) {
+  if (!executions.length) return `Done, ${address}.`;
+
+  const phrases = executions.map((execution) => buildRemoteSuccessPhrase(execution, meta));
+  const first = phrases[0];
+  const samePhrase = phrases.every((phrase) => phrase === first);
+
+  if (samePhrase) {
+    return `${first} on ${joinDeviceNames(executions.map((item) => item.device.name))}, ${address}.`;
+  }
+
+  const fragments = executions.map((execution, index) => `${phrases[index]} on ${execution.device.name}`);
+  return `${fragments.join('. ')}, ${address}.`;
+}
+
+function buildRemoteSuccessPhrase(execution, meta = {}) {
+  const type = execution.queued?.type;
+  const payload = execution.queued?.payload || {};
+  const parsed = payload.parser || meta.parser || null;
+
+  if (type === 'open_url') {
+    const details = describeUrlCommand(payload.url, payload.label, parsed);
+    if (details.site === 'YouTube') return details.query ? `Searching YouTube for ${details.query}` : 'Opening YouTube';
+    if (details.site === 'Google') return details.query ? `Searching Google for ${details.query}` : 'Opening Google';
+    return `Opening ${details.label || 'the requested page'}`;
+  }
+
+  if (type === 'open_app') return `Opening ${parsed?.appOrSite ? nativeAppLabel(parsed.appOrSite) : (payload.label || payload.appName || payload.app || 'the requested app')}`;
+  if (type === 'close_app') return `Closing ${parsed?.appOrSite ? nativeAppLabel(parsed.appOrSite) : (payload.label || payload.appName || payload.app || 'the requested app')}`;
+  if (type === 'close_url') return `Closing ${payload.label || (parsed?.appOrSite ? nativeAppLabel(parsed.appOrSite) : '') || 'the requested page'}`;
+  if (type === 'media_key') return 'Done';
+
+  return 'Done';
+}
+
+function describeUrlCommand(url, fallbackLabel = '', parsed = null) {
+  try {
+    const parsedUrl = new URL(String(url || ''));
+    const host = parsedUrl.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      return {
+        site: 'YouTube',
+        label: 'YouTube',
+        query: parsed?.searchQuery || parsedUrl.searchParams.get('search_query') || ''
+      };
+    }
+    if (host === 'google.com') {
+      return {
+        site: 'Google',
+        label: 'Google',
+        query: parsed?.searchQuery || parsedUrl.searchParams.get('q') || ''
+      };
+    }
+  } catch {
+    // The fallback label is still useful if the URL is malformed.
+  }
+  return { site: '', label: fallbackLabel, query: parsed?.searchQuery || '' };
+}
+
+function stripAddress(reply, address) {
+  const suffix = new RegExp(`,\\s*${escapeRegExp(address)}\\.$`, 'i');
+  return String(reply || '').replace(suffix, '').replace(/\.$/, '');
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function joinDeviceNames(names) {
