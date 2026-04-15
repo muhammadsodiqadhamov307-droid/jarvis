@@ -144,15 +144,15 @@ function setSystemVolume(payload = {}) {
   }
 
   if (action === 'up') {
-    runPowerShellSync('$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys([char]175)');
+    runVolumeKeyPress(175, 5);
   } else if (action === 'down') {
-    runPowerShellSync('$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys([char]174)');
+    runVolumeKeyPress(174, 5);
   } else if (action === 'mute') {
     runAudioEndpointScript({ mute: true });
   } else if (action === 'unmute') {
     runAudioEndpointScript({ mute: false });
   } else if (action === 'max') {
-    runAudioEndpointScript({ level: 100 });
+    runVolumeKeyPress(175, 60);
   } else {
     const level = Math.max(0, Math.min(100, Math.round(Number(payload.level ?? 50))));
     runAudioEndpointScript({ level });
@@ -168,19 +168,32 @@ function setSystemVolume(payload = {}) {
   };
 }
 
+function runVolumeKeyPress(keyCode, count = 1) {
+  const presses = Math.max(1, Math.min(80, Math.round(Number(count) || 1)));
+  runPowerShellSync(`
+$wsh = New-Object -ComObject WScript.Shell
+1..${presses} | ForEach-Object {
+  $wsh.SendKeys([char]${keyCode})
+  Start-Sleep -Milliseconds 15
+}
+`);
+}
+
 function runAudioEndpointScript({ level = null, mute = null } = {}) {
   const commands = [];
   if (typeof level === 'number') {
-    commands.push(`$aev.SetMasterVolumeLevelScalar(${(Math.max(0, Math.min(100, level)) / 100).toFixed(2)}, [System.Guid]::Empty) | Out-Null`);
+    commands.push(`[JarvisAudio.AudioController]::SetVolume(${(Math.max(0, Math.min(100, level)) / 100).toFixed(2)})`);
   }
   if (typeof mute === 'boolean') {
-    commands.push(`$aev.SetMute($${mute ? 'true' : 'false'}, [System.Guid]::Empty) | Out-Null`);
+    commands.push(`[JarvisAudio.AudioController]::SetMute($${mute ? 'true' : 'false'})`);
   }
 
   runPowerShellSync(`
 $ErrorActionPreference = 'Stop'
 $code = @'
+using System;
 using System.Runtime.InteropServices;
+namespace JarvisAudio {
 [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IAudioEndpointVolume {
@@ -196,7 +209,7 @@ public interface IAudioEndpointVolume {
 [Guid("D666063F-1587-4E43-81F1-B948E807363F"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 public interface IMMDevice {
-  int Activate(ref System.Guid id, int ctx, int p, out IAudioEndpointVolume v);
+  int Activate(ref Guid id, int ctx, IntPtr p, out IAudioEndpointVolume v);
 }
 [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -206,15 +219,27 @@ public interface IMMDeviceEnumerator {
 }
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
 public class MMDeviceEnumeratorComObject {}
+public static class AudioController {
+  public static void SetVolume(float level) {
+    level = Math.Max(0f, Math.Min(1f, level));
+    GetEndpoint().SetMasterVolumeLevelScalar(level, Guid.Empty);
+  }
+  public static void SetMute(bool mute) {
+    GetEndpoint().SetMute(mute, Guid.Empty);
+  }
+  private static IAudioEndpointVolume GetEndpoint() {
+    IMMDeviceEnumerator enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+    IMMDevice device;
+    Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(0, 1, out device));
+    Guid id = typeof(IAudioEndpointVolume).GUID;
+    IAudioEndpointVolume volume;
+    Marshal.ThrowExceptionForHR(device.Activate(ref id, 23, IntPtr.Zero, out volume));
+    return volume;
+  }
+}
+}
 '@
 Add-Type -TypeDefinition $code
-$enum = New-Object MMDeviceEnumeratorComObject
-$id = [System.Guid]::new("5CDF2C82-841E-4546-9722-0CF74078229A")
-[IMMDeviceEnumerator]$enum2 = $enum
-[IMMDevice]$dev = $null
-$enum2.GetDefaultAudioEndpoint(0, 1, [ref]$dev) | Out-Null
-[IAudioEndpointVolume]$aev = $null
-$dev.Activate([ref]$id, 1, 0, [ref]$aev) | Out-Null
 ${commands.join('\n')}
 `);
 }
@@ -311,7 +336,7 @@ function getMetadata() {
     username: os.userInfo().username,
     arch: os.arch(),
     uptimeSeconds: Math.round(os.uptime()),
-    agentVersion: '0.3.0'
+    agentVersion: '0.3.1'
   };
 }
 

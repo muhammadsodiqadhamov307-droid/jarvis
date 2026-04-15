@@ -1,7 +1,7 @@
 #define AppName "JARVIS Computer Agent"
 #define AppPublisher "JARVIS Workshop"
 #ifndef AppVersion
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #endif
 #ifndef AppSource
 #define AppSource "..\..\..\release\jarvis-computer-agent"
