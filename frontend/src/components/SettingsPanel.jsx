@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Eye, EyeOff, Loader2, Power, Save, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, Eye, EyeOff, Loader2, Plus, Power, Save, Trash2, X } from 'lucide-react';
 import { API_URL } from '../config.js';
 
 export default function SettingsPanel({ open, onClose }) {
@@ -10,6 +10,9 @@ export default function SettingsPanel({ open, onClose }) {
   const [secretVisible, setSecretVisible] = useState({});
   const [clearSecrets, setClearSecrets] = useState({});
   const [startup, setStartup] = useState({ supported: false, enabled: false, command: '' });
+  const [favorites, setFavorites] = useState([]);
+  const [favoriteDraft, setFavoriteDraft] = useState({ title: '', url: '' });
+  const [favoritesLoading, setFavoritesLoading] = useState(false);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
@@ -17,9 +20,11 @@ export default function SettingsPanel({ open, onClose }) {
     let cancelled = false;
     setLoading(true);
     setMessage('');
-    fetch(`${API_URL}/api/settings`)
-      .then((response) => response.json())
-      .then((payload) => {
+    Promise.all([
+      fetch(`${API_URL}/api/settings`).then((response) => response.json()),
+      fetch(`${API_URL}/api/favorites`).then((response) => response.json())
+    ])
+      .then(([payload, tracks]) => {
         if (cancelled) return;
         const nextSections = payload.settings?.sections || [];
         const nextValues = {};
@@ -31,6 +36,7 @@ export default function SettingsPanel({ open, onClose }) {
         setSections(nextSections);
         setValues(nextValues);
         setStartup(payload.startup || { supported: false, enabled: false, command: '' });
+        setFavorites(Array.isArray(tracks) ? tracks : []);
       })
       .catch((error) => setMessage(`Settings could not be loaded: ${error.message}`))
       .finally(() => {
@@ -82,6 +88,81 @@ export default function SettingsPanel({ open, onClose }) {
       setMessage(`Settings fault: ${error.message}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const reloadFavorites = async () => {
+    setFavoritesLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/favorites`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not load favorites.');
+      setFavorites(Array.isArray(payload) ? payload : []);
+    } catch (error) {
+      setMessage(`Favorite music fault: ${error.message}`);
+    } finally {
+      setFavoritesLoading(false);
+    }
+  };
+
+  const addTrack = async () => {
+    setFavoritesLoading(true);
+    setMessage('');
+    try {
+      const response = await fetch(`${API_URL}/api/favorites`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(favoriteDraft)
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not add favorite track.');
+      setFavoriteDraft({ title: '', url: '' });
+      await reloadFavorites();
+      setMessage('Favorite track added.');
+    } catch (error) {
+      setMessage(`Favorite music fault: ${error.message}`);
+      setFavoritesLoading(false);
+    }
+  };
+
+  const deleteTrack = async (id) => {
+    setFavoritesLoading(true);
+    setMessage('');
+    try {
+      const response = await fetch(`${API_URL}/api/favorites/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not delete favorite track.');
+      await reloadFavorites();
+      setMessage('Favorite track deleted.');
+    } catch (error) {
+      setMessage(`Favorite music fault: ${error.message}`);
+      setFavoritesLoading(false);
+    }
+  };
+
+  const moveTrack = async (index, direction) => {
+    const next = [...favorites];
+    const target = index + direction;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    const reordered = next.map((track, play_order) => ({ ...track, play_order }));
+    setFavorites(reordered);
+    setFavoritesLoading(true);
+    setMessage('');
+    try {
+      const response = await fetch(`${API_URL}/api/favorites/reorder`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tracks: reordered.map(({ id, play_order }) => ({ id, play_order })) })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Could not reorder favorite tracks.');
+      setFavorites(Array.isArray(payload) ? payload : reordered);
+    } catch (error) {
+      setMessage(`Favorite music fault: ${error.message}`);
+      await reloadFavorites();
+    } finally {
+      setFavoritesLoading(false);
     }
   };
 
@@ -179,6 +260,79 @@ export default function SettingsPanel({ open, onClose }) {
                   >
                     <Power size={16} /> {startup.enabled ? 'Enabled' : 'Disabled'}
                   </button>
+                </div>
+              </section>
+
+              <section className="border-t border-reactor/25 pt-4 lg:col-span-2">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-reactor">Favorite Music</h3>
+                <div className="mt-4 grid gap-3">
+                  {favorites.length ? (
+                    favorites.map((track, index) => (
+                      <div key={track.id} className="flex flex-col gap-3 border border-reactor/20 bg-reactor/5 p-3 sm:flex-row sm:items-center">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-semibold text-slate-100">{track.title || 'Favorite track'}</p>
+                          <p className="mt-1 truncate text-xs text-slate-400">{track.url}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={favoritesLoading || index === 0}
+                            onClick={() => moveTrack(index, -1)}
+                            className="rounded border border-slate-700 px-3 py-2 text-slate-300 hover:border-reactor hover:text-reactor disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Move favorite track up"
+                          >
+                            <ArrowUp size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={favoritesLoading || index === favorites.length - 1}
+                            onClick={() => moveTrack(index, 1)}
+                            className="rounded border border-slate-700 px-3 py-2 text-slate-300 hover:border-reactor hover:text-reactor disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Move favorite track down"
+                          >
+                            <ArrowDown size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={favoritesLoading}
+                            onClick={() => deleteTrack(track.id)}
+                            className="rounded border border-danger/60 px-3 py-2 text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Delete favorite track"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="border border-reactor/20 bg-reactor/5 p-4 text-sm text-slate-400">No favorite tracks yet, Sir.</p>
+                  )}
+
+                  <div className="grid gap-3 border border-reactor/20 bg-void/50 p-3 md:grid-cols-[1fr_1.5fr_auto]">
+                    <input
+                      type="text"
+                      value={favoriteDraft.title}
+                      onChange={(event) => setFavoriteDraft((current) => ({ ...current, title: event.target.value }))}
+                      placeholder="Title"
+                      className="rounded border border-slate-700 bg-void/80 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-reactor"
+                    />
+                    <input
+                      type="url"
+                      value={favoriteDraft.url}
+                      onChange={(event) => setFavoriteDraft((current) => ({ ...current, url: event.target.value }))}
+                      placeholder="YouTube URL"
+                      className="rounded border border-slate-700 bg-void/80 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-reactor"
+                    />
+                    <button
+                      type="button"
+                      disabled={favoritesLoading || !favoriteDraft.url.trim()}
+                      onClick={addTrack}
+                      className="inline-flex items-center justify-center gap-2 rounded bg-reactor px-4 py-2 text-sm font-semibold text-void hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {favoritesLoading ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
+                      Add track
+                    </button>
+                  </div>
                 </div>
               </section>
             </div>

@@ -25,6 +25,13 @@ import { getSettingsForClient, updateSettings } from './settings.js';
 import { getStartupStatus, setStartupEnabled } from './startup.js';
 import { dbProvider, initDatabase } from './db.js';
 import {
+  addFavoriteTrack,
+  deleteFavoriteTrack,
+  getNextFavoriteTrack,
+  listFavoriteTracks,
+  reorderFavoriteTracks
+} from './favorites.js';
+import {
   approveDevice,
   getCommand,
   heartbeatDevice,
@@ -143,6 +150,38 @@ app.patch('/api/notes/append', async (req, res, next) => {
 app.delete('/api/notes/:identifier', async (req, res, next) => {
   try {
     res.json({ deleted: await deleteNote(req.params.identifier) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/favorites', async (_req, res, next) => {
+  try {
+    res.json(await listFavoriteTracks());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/favorites', async (req, res, next) => {
+  try {
+    res.status(201).json(await addFavoriteTrack(req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/favorites/:id', async (req, res, next) => {
+  try {
+    res.json({ deleted: await deleteFavoriteTrack(req.params.id) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/api/favorites/reorder', async (req, res, next) => {
+  try {
+    res.json(await reorderFavoriteTracks(req.body?.tracks || req.body || []));
   } catch (error) {
     next(error);
   }
@@ -554,16 +593,34 @@ async function handleCommand(message, address) {
 
 async function handleParsedCommand(rawText, parsed, address) {
   const devices = await safeListDevices();
-  const plan = buildPlanFromParsedCommand(rawText, parsed, devices);
-  if (!plan) return null;
-  return executeCommandPlan(plan, address);
+  const tasks = normalizeParsedTasks(parsed);
+  if (!tasks.length) return null;
+
+  const plans = (await Promise.all(tasks.map((task) => buildPlanFromParsedCommand(rawText, task, devices, parsed))))
+    .filter(Boolean);
+  if (!plans.length) return null;
+  if (plans.length === 1) return executeCommandPlan(plans[0], address);
+
+  const results = await Promise.all(plans.map((plan) => executeCommandPlan(plan, address)));
+  return buildMultiTaskCommandResult(results, address, parsed);
 }
 
 function shouldPassParsedCommandToChat(parsed) {
-  return ['remember', 'forget', 'notes', 'time', 'calculate', 'none'].includes(parsed.action);
+  const tasks = normalizeParsedTasks(parsed);
+  return tasks.length > 0 && tasks.every((task) => ['remember', 'forget', 'notes', 'time', 'calculate', 'none'].includes(task.action));
 }
 
-function buildPlanFromParsedCommand(rawText, parsed, devices) {
+function normalizeParsedTasks(parsed) {
+  if (!parsed) return [];
+  const tasks = Array.isArray(parsed.tasks) && parsed.tasks.length ? parsed.tasks : [parsed];
+  return tasks.map((task) => ({
+    ...task,
+    language: task.language || parsed.language || 'en',
+    rawIntent: task.rawIntent || parsed.rawIntent || ''
+  }));
+}
+
+async function buildPlanFromParsedCommand(rawText, parsed, devices, parsedRoot = null) {
   if (!parsed || parsed.action === 'none') return null;
 
   if (['weather', 'news'].includes(parsed.action) || (parsed.action === 'search' && !parsed.appOrSite)) {
@@ -571,7 +628,7 @@ function buildPlanFromParsedCommand(rawText, parsed, devices) {
       kind: 'search',
       query: parsed.searchQuery || parsed.rawIntent || rawText,
       originalText: rawText,
-      meta: { source: 'parser', parser: parsed }
+      meta: { source: 'parser', parser: parsed, parsedRoot }
     };
   }
 
@@ -579,11 +636,24 @@ function buildPlanFromParsedCommand(rawText, parsed, devices) {
     return {
       kind: 'device_status',
       text: parsed.rawIntent || rawText,
-      meta: { source: 'parser', parser: parsed }
+      meta: { source: 'parser', parser: parsed, parsedRoot }
     };
   }
 
-  const desktopIntent = buildDesktopIntentFromParsed(parsed);
+  let favoriteTrack = null;
+  if (parsed.action === 'play' && parsed.favoritesPlay) {
+    favoriteTrack = await getNextFavoriteTrack();
+    if (!favoriteTrack) {
+      return {
+        kind: 'reply',
+        command: 'favorites:empty',
+        payload: { parser: parsed },
+        reply: 'You have no favorite tracks saved, Sir. Add some in Settings.'
+      };
+    }
+  }
+
+  const desktopIntent = buildDesktopIntentFromParsed(parsed, favoriteTrack);
   if (!desktopIntent) return null;
 
   const approved = (devices || []).filter((device) => device.status === 'approved');
@@ -592,13 +662,32 @@ function buildPlanFromParsedCommand(rawText, parsed, devices) {
     kind: 'desktop',
     text: parsed.rawIntent || rawText,
     desktopIntent,
-    meta: { source: 'parser', parser: parsed },
+    meta: { source: 'parser', parser: parsed, parsedRoot, favoriteTrack },
     targets: selection.targets,
     requestedNames: selection.requestedNames
   };
 }
 
-function buildDesktopIntentFromParsed(parsed) {
+function buildDesktopIntentFromParsed(parsed, favoriteTrack = null) {
+  if (favoriteTrack) {
+    return {
+      action: 'open_url',
+      label: favoriteTrack.title || 'Favorite track',
+      url: favoriteTrack.url,
+      favoriteTrack
+    };
+  }
+
+  if (parsed.action === 'volume') {
+    const volume = normalizeVolumePayload(parsed.volume);
+    if (!volume) return null;
+    return {
+      action: 'set_volume',
+      volume,
+      label: volumeLabel(volume)
+    };
+  }
+
   const app = parsed.appOrSite || (parsed.action === 'play' ? 'youtube' : null);
   const query = cleanRemoteSearchQuery(parsed.searchQuery, app);
 
@@ -666,6 +755,28 @@ function nativeAppLabel(app) {
     obs: 'OBS Studio'
   };
   return labels[app] || app;
+}
+
+function normalizeVolumePayload(value) {
+  const action = String(value?.action || '').trim().toLowerCase();
+  if (!['set', 'up', 'down', 'mute', 'unmute', 'max'].includes(action)) return null;
+  const result = { action };
+  if (action === 'set') {
+    const level = Number(value.level);
+    result.level = Math.max(0, Math.min(100, Number.isFinite(level) ? Math.round(level) : 50));
+  }
+  return result;
+}
+
+function volumeLabel(volume) {
+  if (!volume) return 'Volume control';
+  if (volume.action === 'up') return 'Volume up';
+  if (volume.action === 'down') return 'Volume down';
+  if (volume.action === 'mute') return 'Mute';
+  if (volume.action === 'unmute') return 'Unmute';
+  if (volume.action === 'max') return 'Maximum volume';
+  if (volume.action === 'set') return `Volume ${volume.level}%`;
+  return 'Volume control';
 }
 
 function resolveParsedTargetDevices(parsedDevices = [], approvedDevices = []) {
@@ -832,6 +943,13 @@ async function analyzeCommand(text, address) {
 
 async function executeCommandPlan(plan, address) {
   if (!plan) return {};
+  if (plan.kind === 'reply') {
+    return {
+      command: plan.command || 'reply',
+      payload: plan.payload || null,
+      reply: plan.reply
+    };
+  }
   if (plan.kind === 'search') {
     return handleSearchCommand(plan.query, plan.originalText, address, plan.meta);
   }
@@ -849,6 +967,34 @@ async function executeCommandPlan(plan, address) {
     return handleDesktopCommand(plan.text, plan.desktopIntent, address, plan.meta, plan.targets, plan.requestedNames);
   }
   return {};
+}
+
+function buildMultiTaskCommandResult(results, address, parsed) {
+  const settled = (results || []).filter(Boolean);
+  if (!settled.length) return null;
+
+  const replies = settled
+    .map((result) => stripAddress(result.reply || '', address))
+    .map((reply) => reply.replace(/^Done(?:,\s*)?/i, '').trim())
+    .filter(Boolean);
+
+  const failed = replies.filter((reply) => /\b(could not|offline|no approved|no favorite|do not see|not configured|failed|fault)\b/i.test(reply));
+  const succeeded = replies.filter((reply) => !failed.includes(reply));
+  let reply;
+
+  if (failed.length && succeeded.length) {
+    reply = `${succeeded.join('. ')}, ${address}, but ${failed.join('. ')}.`;
+  } else if (failed.length) {
+    reply = `${failed.join('. ')}, ${address}.`;
+  } else {
+    reply = `Done, ${address}. ${replies.join('. ')}.`;
+  }
+
+  return {
+    command: 'parser:multi-task',
+    payload: { parsed, results: settled.map((result) => ({ command: result.command, payload: result.payload })) },
+    reply: reply.replace(/\s+\./g, '.')
+  };
 }
 
 async function handleSearchCommand(query, originalText, address, meta = {}) {
@@ -955,6 +1101,13 @@ async function handleDesktopCommand(text, desktopIntent, address, meta = {}, tar
       command: summary.command,
       payload: { executions, intent: meta.intent || null },
       reply: summary.reply
+    };
+  }
+  if (desktopIntent?.action === 'set_volume') {
+    return {
+      command: 'desktop:volume-unavailable',
+      payload: { intent: meta.intent || null, parser: meta.parser || null },
+      reply: `Volume control is only available on linked Windows computers, ${address}.`
     };
   }
   const result = await executeDesktopIntent(desktopIntent);
@@ -1102,6 +1255,23 @@ async function executeRemoteDesktopCommand(device, text, desktopIntent, meta) {
     };
   }
 
+  if (desktopIntent?.action === 'set_volume' && !isWindowsLinkedDevice(device)) {
+    return {
+      status: 'error',
+      device,
+      completed: { status: 'error', error: 'Volume control is only available on linked Windows computers.' },
+      reachability
+    };
+  }
+  if (desktopIntent?.action === 'set_volume' && !supportsVolumeRemote(device)) {
+    return {
+      status: 'error',
+      device,
+      completed: { status: 'error', error: 'The linked Windows agent must be updated before it can control volume.' },
+      reachability
+    };
+  }
+
   const command = buildRemoteCommand(device, desktopIntent, text, meta);
   const queued = await queueCommand(device.id, command.type, command.payload);
   const completed = await waitForCommandCompletion(queued.id, Number(process.env.REMOTE_COMMAND_WAIT_MS || 9000));
@@ -1112,6 +1282,10 @@ async function executeRemoteDesktopCommand(device, text, desktopIntent, meta) {
     completed,
     reachability
   };
+}
+
+function isWindowsLinkedDevice(device) {
+  return /windows/i.test(`${device?.platform || ''} ${device?.metadata?.os || ''} ${device?.metadata?.platform || ''}`);
 }
 
 function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
@@ -1129,6 +1303,7 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
       payload: {
         url: openIntent.url,
         label: openIntent.label,
+        favoriteTrack: meta.favoriteTrack || openIntent.favoriteTrack || null,
         intent: meta.intent || null,
         parser: meta.parser || null
       }
@@ -1183,6 +1358,19 @@ function buildRemoteCommand(device, desktopIntent, text, meta = {}) {
       type: 'media_key',
       payload: {
         key: desktopIntent.key,
+        label: desktopIntent.label,
+        intent: meta.intent || null,
+        parser: meta.parser || null
+      }
+    };
+  }
+
+  if (desktopIntent.action === 'set_volume') {
+    return {
+      type: 'set_volume',
+      payload: {
+        action: desktopIntent.volume?.action,
+        level: desktopIntent.volume?.level,
         label: desktopIntent.label,
         intent: meta.intent || null,
         parser: meta.parser || null
@@ -1304,13 +1492,23 @@ function summarizeRemoteExecutions(executions, address, meta = {}) {
   if (offline.length) parts.push(`${joinDeviceNames(offline.map((item) => item.device.name))} ${offline.length === 1 ? 'is' : 'are'} offline`);
   if (queued.length) parts.push(`still waiting on ${joinDeviceNames(queued.map((item) => item.device.name))}`);
   if (errors.length) {
-    parts.push(errors.map((item) => `Could not complete that on ${item.device.name}`).join('; '));
+    parts.push(errors.map((item) => {
+      const error = item.completed?.error || item.queued?.error || '';
+      if (/Volume control is only available/i.test(error)) return `Volume control is only available on linked Windows computers`;
+      if (/agent must be updated/i.test(error)) return `${item.device.name} needs the updated Windows agent before volume control will work`;
+      return `Could not complete that on ${item.device.name}`;
+    }).join('; '));
   }
 
   return {
     command: 'desktop:remote-mixed',
     reply: `${parts.join('. ')}, ${address}.`
   };
+}
+
+function supportsVolumeRemote(device) {
+  const version = String(device?.metadata?.agentVersion || '').trim();
+  return version ? compareVersions(version, '0.3.0') >= 0 : false;
 }
 
 function buildRemoteSuccessReply(executions, address, meta = {}) {
@@ -1334,6 +1532,8 @@ function buildRemoteSuccessPhrase(execution, meta = {}) {
   const parsed = payload.parser || meta.parser || null;
 
   if (type === 'open_url') {
+    const favorite = payload.favoriteTrack || meta.favoriteTrack || parsed?.favoriteTrack;
+    if (parsed?.favoritesPlay && favorite?.title) return `Playing ${favorite.title}`;
     const details = describeUrlCommand(payload.url, payload.label, parsed);
     if (details.site === 'YouTube') return details.query ? `Searching YouTube for ${details.query}` : 'Opening YouTube';
     if (details.site === 'Google') return details.query ? `Searching Google for ${details.query}` : 'Opening Google';
@@ -1344,8 +1544,19 @@ function buildRemoteSuccessPhrase(execution, meta = {}) {
   if (type === 'close_app') return `Closing ${parsed?.appOrSite ? nativeAppLabel(parsed.appOrSite) : (payload.label || payload.appName || payload.app || 'the requested app')}`;
   if (type === 'close_url') return `Closing ${payload.label || (parsed?.appOrSite ? nativeAppLabel(parsed.appOrSite) : '') || 'the requested page'}`;
   if (type === 'media_key') return 'Done';
+  if (type === 'set_volume') return describeVolumeCommand(payload);
 
   return 'Done';
+}
+
+function describeVolumeCommand(payload = {}) {
+  if (payload.action === 'up') return 'Volume up';
+  if (payload.action === 'down') return 'Volume down';
+  if (payload.action === 'mute') return 'Muted';
+  if (payload.action === 'unmute') return 'Unmuted';
+  if (payload.action === 'max') return 'Volume set to maximum';
+  if (payload.action === 'set') return `Volume set to ${Number(payload.level || 0)}%`;
+  return 'Volume adjusted';
 }
 
 function describeUrlCommand(url, fallbackLabel = '', parsed = null) {

@@ -11,6 +11,7 @@ const ACTIONS = new Set([
   'calculate',
   'weather',
   'news',
+  'volume',
   'status',
   'none'
 ]);
@@ -74,7 +75,7 @@ async function parseWithModel(model, text, signal) {
         ],
         generationConfig: {
           temperature: 0,
-          maxOutputTokens: 350,
+          maxOutputTokens: 700,
           responseMimeType: 'application/json'
         }
       })
@@ -112,24 +113,70 @@ function cleanJson(raw) {
 
 function normalizeParsedCommand(value) {
   if (!value || typeof value !== 'object') return null;
+  const rawTasks = Array.isArray(value.tasks) && value.tasks.length ? value.tasks : [value];
+  const language = normalizeLanguage(value.language);
+  const tasks = rawTasks
+    .map((task) => normalizeTask(task, language))
+    .filter(Boolean);
+
+  if (!tasks.length) return null;
+  const first = tasks[0];
+  return {
+    ...first,
+    tasks,
+    language,
+    rawIntent: String(value.rawIntent || first.rawIntent || '').trim()
+  };
+}
+
+function normalizeTask(value, language = 'en') {
+  if (!value || typeof value !== 'object') return null;
   const rawAction = String(value.action || '').trim().toLowerCase();
   const action = ACTIONS.has(rawAction) ? rawAction : 'none';
   const rawApp = String(value.appOrSite ?? 'null').trim().toLowerCase();
   const appOrSite = APPS.has(rawApp) && rawApp !== 'null' ? rawApp : null;
   const devices = Array.isArray(value.devices) ? value.devices : ['default'];
-  const rawLanguage = String(value.language || '').trim().toLowerCase();
-  const language = LANGUAGES.has(rawLanguage) ? rawLanguage : 'en';
+  const rawIntent = String(value.rawIntent || '').trim();
+  const searchQuery = sanitizeSearchQuery(cleanNullable(value.searchQuery), appOrSite, action);
 
   return {
     action,
     appOrSite,
-    searchQuery: sanitizeSearchQuery(cleanNullable(value.searchQuery), appOrSite, action),
+    searchQuery,
     devices: devices.map((device) => String(device || '').trim()).filter(Boolean).length
       ? devices.map((device) => String(device || '').trim()).filter(Boolean)
       : ['default'],
     language,
-    rawIntent: String(value.rawIntent || '').trim()
+    rawIntent,
+    favoritesPlay: Boolean(value.favoritesPlay) || looksLikeFavoriteRequest(rawIntent, searchQuery),
+    volume: normalizeVolume(value.volume)
   };
+}
+
+function normalizeLanguage(value) {
+  const rawLanguage = String(value || '').trim().toLowerCase();
+  return LANGUAGES.has(rawLanguage) ? rawLanguage : 'en';
+}
+
+function normalizeVolume(value) {
+  if (!value || typeof value !== 'object') return null;
+  const action = String(value.action || '').trim().toLowerCase();
+  const allowed = new Set(['set', 'up', 'down', 'mute', 'unmute', 'max']);
+  if (!allowed.has(action)) return null;
+  const level = Number(value.level);
+  return {
+    action,
+    level: action === 'set'
+      ? Math.max(0, Math.min(100, Number.isFinite(level) ? Math.round(level) : 50))
+      : undefined
+  };
+}
+
+function looksLikeFavoriteRequest(...parts) {
+  const text = parts.filter(Boolean).join(' ').toLowerCase();
+  return /\b(favou?rite|next favorite|saved song|saved track)\b/i.test(text)
+    || /\bsevimli\b/i.test(text)
+    || /\b(любим|избранн)\b/i.test(text);
 }
 
 function cleanNullable(value) {
@@ -171,17 +218,26 @@ The user speaks English, Uzbek, and Russian.
 Speech recognition may fragment words with extra spaces or broken syllables.
 You must repair fragmented words, understand the meaning, and return
 structured JSON only. No explanation, no markdown, no preamble.
-Return exactly this JSON shape:
+Always return exactly this JSON shape:
 {
-"action": "open | play | search | close | media | remember | forget | notes | time | calculate | weather | news | status | none",
-"appOrSite": "youtube | google | telegram | chrome | spotify | vscode | notepad | explorer | calculator | word | excel | obs | null",
-"searchQuery": "cleaned search content only - no app names, no device names, no action words, no filler | null",
-"devices": ["my computer" | "computer 1" | "computer 2" | "both" | "all" | "default"],
-"language": "en | uz | ru",
-"rawIntent": "one sentence describing what the user wants in English"
+"tasks": [
+  {
+    "action": "open | play | search | close | media | remember | forget | notes | time | calculate | weather | news | volume | status | none",
+    "appOrSite": "youtube | google | telegram | chrome | spotify | vscode | notepad | explorer | calculator | word | excel | obs | null",
+    "searchQuery": "cleaned search content only - no app names, no device names, no action words, no filler | null",
+    "devices": ["my computer" | "computer 1" | "computer 2" | "both" | "all" | "default"],
+    "favoritesPlay": false,
+    "volume": { "action": "set | up | down | mute | unmute | max", "level": 50 },
+    "rawIntent": "one sentence describing this task in English"
+  }
+],
+"language": "en | uz | ru"
 }
 Rules:
 
+Always return a "tasks" array. Even if there is only one task, wrap it in the array.
+Split compound commands into separate task objects.
+Each task must be fully self-contained with its own action, appOrSite, searchQuery, devices, favoritesPlay, volume, and rawIntent.
 searchQuery must contain ONLY the content to search for.
 Never include: app names, device names, ordinal words,
 action verbs, filler words, or language artifacts.
@@ -191,6 +247,19 @@ If the user says "play Kapalagim by Mashxurbek Yuldashev on YouTube",
 searchQuery must be "Mashxurbek Yuldashev Kapalagim".
 If the user says "google weather in Uzbekistan",
 searchQuery must be "weather in Uzbekistan".
+If the user says "play my favorite music", set favoritesPlay true and searchQuery null.
+If the user says "play my favorite song and set volume to max on computer 1",
+return two tasks: a play task with favoritesPlay true and a volume task with volume.action "max".
+If the user says "open Telegram on computer 1 and close YouTube on computer 2",
+return two tasks with their own devices.
+If the user says "mute computer 2, play music on computer 1, and open Telegram on computer 1",
+return three tasks.
+For volume: "volume up" means action "volume" and volume.action "up";
+"volume down" -> "down"; "mute" -> "mute"; "unmute" -> "unmute";
+"set volume to max" -> "max"; "set volume to 50" -> "set" with level 50.
+Uzbek volume examples: "ovozni oshir" -> up; "ovozni tushir" -> down;
+"ovozni o'chir" -> mute; "ovozni yoq" -> unmute; "ovozni maksimumga qo'y" -> max.
+Russian volume examples: "громче" -> up; "тише" -> down; "выключи звук" -> mute.
 devices must always be an array. Default to ["default"] if no
 device is mentioned.
 Repair fragmented words silently. Do not mention the repair.

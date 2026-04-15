@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { execSync } from 'child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -129,7 +130,102 @@ async function runAllowedCommand(command) {
     });
   }
 
+  if (command.type === 'set_volume') {
+    return setSystemVolume(payload);
+  }
+
   throw new Error(`Unsupported command type: ${command.type}`);
+}
+
+function setSystemVolume(payload = {}) {
+  const action = String(payload.action || '').trim().toLowerCase();
+  if (!['set', 'up', 'down', 'mute', 'unmute', 'max'].includes(action)) {
+    throw new Error(`Unsupported volume action: ${payload.action}`);
+  }
+
+  if (action === 'up') {
+    runPowerShellSync('$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys([char]175)');
+  } else if (action === 'down') {
+    runPowerShellSync('$wsh = New-Object -ComObject WScript.Shell; $wsh.SendKeys([char]174)');
+  } else if (action === 'mute') {
+    runAudioEndpointScript({ mute: true });
+  } else if (action === 'unmute') {
+    runAudioEndpointScript({ mute: false });
+  } else if (action === 'max') {
+    runAudioEndpointScript({ level: 100 });
+  } else {
+    const level = Math.max(0, Math.min(100, Math.round(Number(payload.level ?? 50))));
+    runAudioEndpointScript({ level });
+  }
+
+  return {
+    ok: true,
+    action: 'set_volume',
+    volume: {
+      action,
+      level: action === 'set' ? Math.max(0, Math.min(100, Math.round(Number(payload.level ?? 50)))) : undefined
+    }
+  };
+}
+
+function runAudioEndpointScript({ level = null, mute = null } = {}) {
+  const commands = [];
+  if (typeof level === 'number') {
+    commands.push(`$aev.SetMasterVolumeLevelScalar(${(Math.max(0, Math.min(100, level)) / 100).toFixed(2)}, [System.Guid]::Empty) | Out-Null`);
+  }
+  if (typeof mute === 'boolean') {
+    commands.push(`$aev.SetMute($${mute ? 'true' : 'false'}, [System.Guid]::Empty) | Out-Null`);
+  }
+
+  runPowerShellSync(`
+$ErrorActionPreference = 'Stop'
+$code = @'
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int _VtblGap1_3();
+  int _VtblGap2_1();
+  int SetMasterVolumeLevelScalar(float f, System.Guid g);
+  int _VtblGap3_1();
+  int GetMasterVolumeLevelScalar(out float f);
+  int _VtblGap4_4();
+  int SetMute(bool b, System.Guid g);
+  int GetMute(out bool b);
+}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+  int Activate(ref System.Guid id, int ctx, int p, out IAudioEndpointVolume v);
+}
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),
+ InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+  int _VtblGap1_1();
+  int GetDefaultAudioEndpoint(int f, int r, out IMMDevice d);
+}
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumeratorComObject {}
+'@
+Add-Type -TypeDefinition $code
+$enum = New-Object MMDeviceEnumeratorComObject
+$id = [System.Guid]::new("5CDF2C82-841E-4546-9722-0CF74078229A")
+[IMMDeviceEnumerator]$enum2 = $enum
+[IMMDevice]$dev = $null
+$enum2.GetDefaultAudioEndpoint(0, 1, [ref]$dev) | Out-Null
+[IAudioEndpointVolume]$aev = $null
+$dev.Activate([ref]$id, 1, 0, [ref]$aev) | Out-Null
+${commands.join('\n')}
+`);
+}
+
+function runPowerShellSync(script) {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`, {
+    windowsHide: true,
+    stdio: 'pipe',
+    timeout: 12000
+  });
 }
 
 async function updateStatus(commandId, status, result = {}, error = '') {
@@ -215,7 +311,7 @@ function getMetadata() {
     username: os.userInfo().username,
     arch: os.arch(),
     uptimeSeconds: Math.round(os.uptime()),
-    agentVersion: '0.2.0'
+    agentVersion: '0.3.0'
   };
 }
 

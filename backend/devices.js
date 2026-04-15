@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { query, nowIso } from './db.js';
 
 const COMMAND_STATUSES = new Set(['queued', 'sent', 'running', 'success', 'error', 'cancelled']);
-const COMMAND_TYPES = new Set(['desktop_intent', 'open_url', 'open_app', 'close_app', 'close_url', 'media_key']);
+const COMMAND_TYPES = new Set(['desktop_intent', 'open_url', 'open_app', 'close_app', 'close_url', 'media_key', 'set_volume']);
 
 export async function registerDevice({ deviceKey, deviceSecret, name, platform, metadata = {} }) {
   const key = cleanRequired(deviceKey, 'deviceKey');

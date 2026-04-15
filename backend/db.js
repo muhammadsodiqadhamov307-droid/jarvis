@@ -50,6 +50,21 @@ export async function initDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS favorite_tracks (
+        id SERIAL PRIMARY KEY,
+        title TEXT,
+        url TEXT NOT NULL,
+        play_order INTEGER NOT NULL DEFAULT 0,
+        last_played_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS conversations (
         id BIGSERIAL PRIMARY KEY,
         role TEXT NOT NULL,
@@ -112,6 +127,21 @@ export async function initDatabase() {
         content TEXT NOT NULL,
         tags TEXT DEFAULT '[]',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS favorite_tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        url TEXT NOT NULL,
+        play_order INTEGER NOT NULL DEFAULT 0,
+        last_played_at TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 

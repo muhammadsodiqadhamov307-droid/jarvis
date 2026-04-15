@@ -40,6 +40,7 @@ jarvisfriend/
     intent.js       Fallback AI intent classifier
     desktop.js      Local Windows app/site/media execution helpers
     devices.js      Device registration, approval, command queue, status updates
+    favorites.js    Favorite music playlist and playback cursor
     db.js           SQLite/PostgreSQL adapter and schema creation
     memory.js       Short-term, long-term, episodic memory
     notes.js        Notes CRUD
@@ -116,6 +117,11 @@ POST /api/search
 POST /api/chat
 POST /api/chat-stream
 
+GET    /api/favorites
+POST   /api/favorites
+DELETE /api/favorites/:id
+PATCH  /api/favorites/reorder
+
 GET  /api/settings
 PUT  /api/settings
 
@@ -159,6 +165,8 @@ conversations
 devices
 commands
 audit_logs
+favorite_tracks
+app_settings
 ```
 
 The schema is initialized in `backend/db.js` at startup.
@@ -248,7 +256,7 @@ The intended pipeline is:
 ```text
 Raw transcript
   -> AI structured command parser
-  -> command plan
+  -> one or more task plans
   -> device resolution
   -> execution
   -> verified JARVIS reply
@@ -293,29 +301,69 @@ The parser receives the raw transcript directly. It is responsible for:
 - Separating the device target from the search query.
 - Returning strict JSON only.
 
-The returned shape is:
+The parser now always returns a `tasks` array. A single command is still wrapped in one task:
 
 ```json
 {
-  "action": "open",
-  "appOrSite": "youtube",
-  "searchQuery": null,
-  "devices": ["default"],
-  "language": "en",
-  "rawIntent": "Open YouTube"
+  "tasks": [
+    {
+      "action": "open",
+      "appOrSite": "youtube",
+      "searchQuery": null,
+      "devices": ["default"],
+      "favoritesPlay": false,
+      "volume": null,
+      "rawIntent": "Open YouTube"
+    }
+  ],
+  "language": "en"
 }
 ```
 
-For a search command:
+For a search command targeting multiple devices:
 
 ```json
 {
-  "action": "play",
-  "appOrSite": "youtube",
-  "searchQuery": "Mashxurbek Yuldashev Kapalagim",
-  "devices": ["both"],
-  "language": "uz",
-  "rawIntent": "Play Mashxurbek Yuldashev Kapalagim on both computers"
+  "tasks": [
+    {
+      "action": "play",
+      "appOrSite": "youtube",
+      "searchQuery": "Mashxurbek Yuldashev Kapalagim",
+      "devices": ["both"],
+      "favoritesPlay": false,
+      "volume": null,
+      "rawIntent": "Play Mashxurbek Yuldashev Kapalagim on both computers"
+    }
+  ],
+  "language": "uz"
+}
+```
+
+For a multi-task command:
+
+```json
+{
+  "tasks": [
+    {
+      "action": "play",
+      "appOrSite": "youtube",
+      "searchQuery": "music",
+      "devices": ["computer 1"],
+      "favoritesPlay": false,
+      "volume": null,
+      "rawIntent": "Play music on computer 1"
+    },
+    {
+      "action": "volume",
+      "appOrSite": null,
+      "searchQuery": null,
+      "devices": ["computer 1"],
+      "favoritesPlay": false,
+      "volume": { "action": "max" },
+      "rawIntent": "Set volume to maximum on computer 1"
+    }
+  ],
+  "language": "en"
 }
 ```
 
@@ -358,7 +406,17 @@ explorer  -> open_app File Explorer
 obs       -> open_app OBS Studio
 ```
 
-Close commands become `close_app` or `close_url`. Media commands become `media_key`.
+Close commands become `close_app` or `close_url`. Media commands become `media_key`. Volume commands become `set_volume` and are sent only to linked Windows agents that support agent version `0.3.0` or newer.
+
+Favorite music commands use the saved playlist:
+
+```text
+play my favorite song
+-> next saved favorite track URL
+
+play my favorite song and set volume to max on computer 1
+-> open favorite track URL and set volume to maximum, both targeting computer 1
+```
 
 ### 5.4 Device Resolution
 
@@ -458,6 +516,8 @@ Desktop execution has two modes:
 - Local Windows execution if the backend itself is running on Windows.
 - Remote execution through approved Windows agents if the backend is running on Linux/server.
 
+When the parser returns more than one task, `backend/server.js` builds a plan for each task and executes them in parallel with `Promise.all()`. Each task keeps its own device target and search query, so device names such as "on my computer" never become YouTube or Google search content.
+
 ## 6. Desktop Command System
 
 `backend/desktop.js` is the allowlisted desktop execution module.
@@ -496,6 +556,7 @@ open_app
 close_app
 close_url
 media_key
+set_volume
 ```
 
 ### 6.1 Search Query vs Device Target
@@ -556,6 +617,84 @@ Structured command examples:
 ```
 
 This matters because raw speech can be misinterpreted twice. The server should decide the action once, then the agent should execute that exact action.
+
+### 6.3 Favorite Music
+
+Favorite music is stored in the `favorite_tracks` table:
+
+```text
+id
+title
+url
+play_order
+last_played_at
+created_at
+```
+
+The playback cursor is stored in `app_settings` as:
+
+```text
+favorite_track_cursor
+```
+
+The Settings panel exposes a Favorite Music section where tracks can be added, deleted, and reordered. When the user says:
+
+```text
+play my favorite music
+play my favorite song
+play next favorite
+sevimli qo'shig'imni qo'y
+сыграй мою любимую музыку
+```
+
+the parser sets `favoritesPlay: true`. The server calls `getNextFavoriteTrack()`, opens that track's URL on the target device, updates the cursor, and replies with a verified message:
+
+```text
+Playing <title> on My computer, Sir.
+```
+
+If the playlist is empty:
+
+```text
+You have no favorite tracks saved, Sir. Add some in Settings.
+```
+
+### 6.4 Volume Control
+
+Volume control uses the structured command type:
+
+```json
+{
+  "type": "set_volume",
+  "payload": {
+    "action": "set",
+    "level": 50
+  }
+}
+```
+
+Supported volume actions:
+
+```text
+set
+up
+down
+mute
+unmute
+max
+```
+
+Examples:
+
+```text
+volume up on computer 1
+set volume to 75 percent on my computer
+mute computer 2
+ovozni oshir
+громче
+```
+
+The Windows agent implements this command through PowerShell. Volume up/down use media keys. Set/max/mute/unmute use the Windows audio endpoint COM API for deterministic state.
 
 ## 7. Remote Device System
 
@@ -668,6 +807,7 @@ open_app
 close_app
 close_url
 media_key
+set_volume
 ```
 
 ### 7.5 Multi-Device Commands
@@ -726,7 +866,7 @@ Logs and config:
 The agent currently reports:
 
 ```text
-agentVersion: 0.2.0
+agentVersion: 0.3.0
 ```
 
 ### 8.1 Autostart
@@ -777,6 +917,8 @@ The installer bundles:
 - `backend/desktop.js`
 - launcher scripts
 - local `node.exe` runtime if Node exists on the build machine
+
+Agents older than `0.3.0` can still open apps and URLs, but they cannot execute `set_volume`. The server reports that the agent must be updated before volume control will work.
 
 ## 9. Memory System
 
@@ -919,6 +1061,15 @@ PUT /api/settings
 ```
 
 Settings can include API keys, voice settings, search settings, and startup behavior.
+
+The Settings panel also manages Favorite Music through:
+
+```text
+GET    /api/favorites
+POST   /api/favorites
+DELETE /api/favorites/:id
+PATCH  /api/favorites/reorder
+```
 
 On Windows local installs, startup can be controlled through:
 
@@ -1115,6 +1266,7 @@ open_app
 close_app
 close_url
 media_key
+set_volume
 ```
 
 `open_url` only allows `http` and `https`.
@@ -1203,7 +1355,7 @@ Timeouts keep the system responsive. The fallback path is useful, but it is less
 
 Older agents can execute `open_url`, `open_app`, `close_app`, and `media_key`.
 
-`close_url` requires the newer agent version.
+`close_url` requires the newer agent version. `set_volume` requires agent version `0.3.0` or newer.
 
 For best behavior, install the latest `JarvisComputerAgent-Setup.exe`.
 
@@ -1229,8 +1381,13 @@ Open Telegram on My computer.
 Close YouTube on my second computer.
 Play music on my computer.
 Play Another Love on my second computer.
+Play my favorite song on my computer.
 Open File Explorer on my computer.
 Pause music on all computers.
+Set volume to max on my computer.
+Mute my second computer.
+Open Telegram on computer 1 and close YouTube on computer 2.
+Play my favorite song and set volume to max on computer 1.
 Are my computers online?
 What is the name of my default computer?
 ```
