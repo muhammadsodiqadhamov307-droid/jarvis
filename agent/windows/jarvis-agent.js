@@ -183,7 +183,7 @@ $code = @'
 using System.Runtime.InteropServices;
 [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IAudioEndpointVolume {
+public interface IAudioEndpointVolume {
   int _VtblGap1_3();
   int _VtblGap2_1();
   int SetMasterVolumeLevelScalar(float f, System.Guid g);
@@ -195,17 +195,17 @@ interface IAudioEndpointVolume {
 }
 [Guid("D666063F-1587-4E43-81F1-B948E807363F"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDevice {
+public interface IMMDevice {
   int Activate(ref System.Guid id, int ctx, int p, out IAudioEndpointVolume v);
 }
 [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"),
  InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-interface IMMDeviceEnumerator {
+public interface IMMDeviceEnumerator {
   int _VtblGap1_1();
   int GetDefaultAudioEndpoint(int f, int r, out IMMDevice d);
 }
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-class MMDeviceEnumeratorComObject {}
+public class MMDeviceEnumeratorComObject {}
 '@
 Add-Type -TypeDefinition $code
 $enum = New-Object MMDeviceEnumeratorComObject
