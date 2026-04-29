@@ -639,7 +639,7 @@ async function handleParsedCommand(rawText, parsed, address, devices = null) {
 
 function shouldPassParsedCommandToChat(parsed) {
   const tasks = normalizeParsedTasks(parsed);
-  return tasks.length > 0 && tasks.every((task) => ['remember', 'forget', 'notes', 'time', 'calculate', 'none'].includes(task.action));
+  return tasks.length > 0 && tasks.every((task) => ['remember', 'forget', 'notes', 'time', 'calculate'].includes(task.action));
 }
 
 function normalizeParsedTasks(parsed) {
