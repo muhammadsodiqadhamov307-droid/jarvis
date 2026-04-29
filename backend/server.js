@@ -1437,6 +1437,13 @@ function resolveRequestedDeviceName(text, explicitTargetDevice = '') {
 }
 
 function findDeviceByName(requestedName, devices) {
+  if (isDefaultDeviceReference(requestedName)) {
+    return getDefaultDevice(devices);
+  }
+
+  const ordinalDevice = resolveOrdinalDeviceReference(requestedName, devices);
+  if (ordinalDevice) return ordinalDevice;
+
   const normalizedRequested = normalizeDeviceText(requestedName);
   if (!normalizedRequested) return null;
   return devices.find((device) => {
@@ -1453,33 +1460,54 @@ function resolveTargetDevices(text, devices, explicitTargetDevice = '') {
   const matched = new Map();
   const sourceText = String(text || '');
 
-  for (const name of splitRequestedDeviceNames(explicitTargetDevice)) {
-    requestedNames.push(name);
-    const match = findDeviceByName(name, devices);
-    if (match) matched.set(match.id, match);
-  }
+  const addDevice = (device) => {
+    if (device) matched.set(device.id, device);
+  };
 
-  for (const device of devices) {
-    const names = [device.name, device.metadata?.hostname, device.metadata?.username].filter(Boolean);
-    if (names.some((name) => deviceMentionedInText(sourceText, name))) {
-      matched.set(device.id, device);
-    }
-  }
-
-  const explicitSingle = resolveRequestedDeviceName(sourceText, explicitTargetDevice);
-  if (explicitSingle && !requestedNames.some((name) => normalizeDeviceText(name) === normalizeDeviceText(explicitSingle))) {
-    requestedNames.push(explicitSingle);
-    const match = findDeviceByName(explicitSingle, devices);
-    if (match) matched.set(match.id, match);
-  }
+  const addRequestedDevice = (name) => {
+    const cleaned = String(name || '').trim();
+    if (!cleaned) return;
+    requestedNames.push(cleaned);
+    addDevice(findDeviceByName(cleaned, devices));
+  };
 
   if (isAllDevicesRequest(sourceText)) {
     return { targets: devices, requestedNames: devices.map((device) => device.name) };
   }
 
+  for (const name of splitRequestedDeviceNames(explicitTargetDevice)) {
+    addRequestedDevice(name);
+  }
+
+  for (const device of devices) {
+    const names = [device.name, device.metadata?.hostname, device.metadata?.username].filter(Boolean);
+    if (names.some((name) => deviceMentionedInText(sourceText, name))) {
+      addDevice(device);
+    }
+  }
+
+  if (isDefaultDeviceReference(sourceText) || hasBareDefaultComputerInMultiTarget(sourceText)) {
+    addDevice(getDefaultDevice(devices));
+  }
+
+  for (const device of resolveOrdinalDeviceReferences(sourceText, devices)) {
+    addDevice(device);
+  }
+
+  const explicitSingle = resolveRequestedDeviceName(sourceText, explicitTargetDevice);
+  if (explicitSingle && !hasMultiDeviceCue(sourceText) && !requestedNames.some((name) => normalizeDeviceText(name) === normalizeDeviceText(explicitSingle))) {
+    addRequestedDevice(explicitSingle);
+  }
+
   if (isBothDevicesRequest(sourceText)) {
     if (matched.size >= 2) return { targets: [...matched.values()], requestedNames };
-    if (devices.length === 2) return { targets: devices, requestedNames: devices.map((device) => device.name) };
+    const defaultDevice = getDefaultDevice(devices);
+    if (defaultDevice) matched.set(defaultDevice.id, defaultDevice);
+    if (matched.size >= 2) return { targets: [...matched.values()], requestedNames };
+    const preferredPair = choosePreferredDevicePair(devices);
+    if (preferredPair.length >= 2) {
+      return { targets: preferredPair, requestedNames: preferredPair.map((device) => device.name) };
+    }
   }
 
   if (matched.size) {
@@ -1491,15 +1519,103 @@ function resolveTargetDevices(text, devices, explicitTargetDevice = '') {
 
 function splitRequestedDeviceNames(value) {
   return String(value || '')
-    .split(/\s*(?:,| and | & | hamda | va | и )\s*/i)
+    .split(/\s*(?:,| and | also | plus | with | & | hamda | va | и )\s*/i)
     .map((item) => item.trim())
     .filter(Boolean);
 }
 
 function deviceMentionedInText(text, deviceName) {
+  if (isDefaultDeviceReference(deviceName)) {
+    return isDefaultDeviceReference(text);
+  }
   const normalizedText = normalizeDeviceText(text);
   const normalizedName = normalizeDeviceText(deviceName);
   return Boolean(normalizedText && normalizedName && normalizedText.includes(normalizedName));
+}
+
+function getDefaultDevice(devices = []) {
+  return devices.find((device) => device.is_default) || devices[0] || null;
+}
+
+function isDefaultDeviceReference(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  return /\b(?:my|default|main|primary)\s+(?:computer|pc|laptop|desktop|device)\b/i.test(normalized);
+}
+
+function resolveOrdinalDeviceReferences(text, devices = []) {
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return [];
+
+  const ordinals = [
+    ['first', 'one', '1'],
+    ['second', 'two', '2'],
+    ['third', 'three', '3'],
+    ['fourth', 'four', '4'],
+    ['fifth', 'five', '5']
+  ];
+  const found = [];
+  for (let index = 0; index < ordinals.length; index += 1) {
+    const choices = ordinals[index].join('|');
+    const pattern = new RegExp(`\\b(?:my\\s+)?(?:${choices})\\s+(?:computer|pc|laptop|desktop|device)\\b`, 'i');
+    if (pattern.test(normalized)) {
+      const direct = findDeviceByOrdinalName(index, devices);
+      const fallback = devices[index] || null;
+      if (direct || fallback) found.push(direct || fallback);
+    }
+  }
+  return found;
+}
+
+function resolveOrdinalDeviceReference(value, devices = []) {
+  return resolveOrdinalDeviceReferences(value, devices)[0] || null;
+}
+
+function findDeviceByOrdinalName(index, devices = []) {
+  const names = [
+    ['first', 'one', '1'],
+    ['second', 'two', '2'],
+    ['third', 'three', '3'],
+    ['fourth', 'four', '4'],
+    ['fifth', 'five', '5']
+  ][index] || [];
+  return devices.find((device) => {
+    const normalized = normalizeDeviceText(`${device.name || ''} ${device.metadata?.hostname || ''} ${device.metadata?.username || ''}`);
+    return names.some((name) => normalized.includes(name));
+  }) || null;
+}
+
+function hasMultiDeviceCue(text) {
+  return /\b(all|every|each|both|and|also|plus|with|hamda|va)\b/i.test(String(text || ''));
+}
+
+function hasBareDefaultComputerInMultiTarget(text) {
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /\b(?:computer|pc|laptop|desktop|device)\s+(?:and|also|plus|with)\s+(?:my\s+)?(?:first|second|third|fourth|fifth|one|two|three|four|five|\d+)\s+(?:computer|pc|laptop|desktop|device)\b/i.test(normalized)
+    || /\b(?:first|second|third|fourth|fifth|one|two|three|four|five|\d+)\s+(?:computer|pc|laptop|desktop|device)\s+(?:and|also|plus|with)\s+(?:the\s+)?(?:computer|pc|laptop|desktop|device)\b/i.test(normalized);
+}
+
+function choosePreferredDevicePair(devices = []) {
+  const pair = [];
+  const add = (device) => {
+    if (device && !pair.some((item) => item.id === device.id)) pair.push(device);
+  };
+  add(getDefaultDevice(devices));
+  add(findDeviceByOrdinalName(1, devices));
+  devices.forEach(add);
+  return pair.slice(0, 2);
 }
 
 function isAllDevicesRequest(text) {
