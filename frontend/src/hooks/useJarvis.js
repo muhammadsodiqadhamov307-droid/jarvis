@@ -166,34 +166,15 @@ export function useJarvis() {
   async function handleLiveFinalText(raw) {
     const text = normalizeSpokenCommand(String(raw || '').trim());
     if (!text) return;
+    if (isNoiseTranscript(text)) return;
     liveTranscriptRef.current.userId = null;
     liveTranscriptRef.current.userText = '';
     const normalized = normalizeTranscript(text);
     const now = Date.now();
     if (lastLocalIntentRef.current.text === normalized && now - lastLocalIntentRef.current.at < 6000) return;
 
-    if (shouldUseTextSearchIntent(text)) {
-      lastLocalIntentRef.current = { text: normalized, at: now };
-      await sendMessage(text, { appendUser: false });
-      return;
-    }
-
-    if (looksLikeFragmentedSpeech(text)) {
-      lastLocalIntentRef.current = { text: normalized, at: now };
-      await sendMessage(text, { appendUser: false });
-      return;
-    }
-
-    if (shouldUseDesktopIntent(text)) {
-      lastLocalIntentRef.current = { text: normalized, at: now };
-      await sendMessage(text, { appendUser: false });
-      return;
-    }
-
-    if (shouldUseDeviceStatusIntent(text)) {
-      lastLocalIntentRef.current = { text: normalized, at: now };
-      await sendMessage(text, { appendUser: false });
-    }
+    lastLocalIntentRef.current = { text: normalized, at: now };
+    await sendMessage(text, { appendUser: false });
   }
 
   const sendMessage = useCallback(async (raw, options = {}) => {
@@ -257,9 +238,10 @@ export function useJarvis() {
       if (meta?.command === 'search') {
         setSearchResults(meta.payload);
         voice.sendLiveText?.(`Read this verified web result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
-      }
-      if (reply && (meta?.command?.startsWith('desktop') || meta?.command?.startsWith('devices'))) {
+      } else if (reply && (meta?.command?.startsWith('desktop') || meta?.command?.startsWith('devices'))) {
         voice.sendLiveText?.(`Say exactly this verified controller result and nothing else: ${reply}`);
+      } else if (reply) {
+        voice.sendLiveText?.(`Say exactly this JARVIS response and nothing else: ${reply}`);
       }
     } catch (error) {
       const reply = `A fault has occurred, ${address}: ${error.message}. I remain composed, naturally.`;
@@ -295,6 +277,13 @@ function stripControllerResultMarker(text) {
   return String(text || '').replace(/^VERIFIED_CONTROLLER_RESULT:\s*/i, '').trim();
 }
 
+function isNoiseTranscript(text) {
+  const normalized = String(text || '').trim().toLowerCase();
+  return !normalized
+    || /^<[^>]+>$/.test(normalized)
+    || /^(noise|silence|background noise|inaudible)$/i.test(normalized);
+}
+
 function isDuplicateTranscript(existing, incoming) {
   const current = normalizeTranscript(existing);
   const next = normalizeTranscript(incoming);
@@ -314,6 +303,9 @@ function shouldUseDesktopIntent(text) {
   const lower = String(text || '').toLowerCase();
   if (shouldUseTextSearchIntent(text) && !/\b(open|launch|start|run|close|quit|exit)\s+(?:the\s+)?weather\s+(?:app|application|program)\b/i.test(lower)) {
     return false;
+  }
+  if (/\b(play|put on|start|listen)\b/i.test(lower) && /\b(favou?rite|saved|sevimli|yoqtirgan)\b/i.test(lower)) {
+    return true;
   }
   return (
     /\b(telegram|youtube|you tube|google|chrome|spotify|vs code|vscode|code editor|notepad|file explorer|explorer|files|folder|calculator|calc|word|excel|obs|obs studio)\b/.test(lower) ||
@@ -348,6 +340,9 @@ function normalizeSpokenCommand(text) {
     .replace(/\bde\s+fault\b/gi, 'default')
     .replace(/\bde\s+vice(?:s)?\b/gi, 'device')
     .replace(/\bcom\s+puter(?:s)?\b/gi, 'computer')
+    .replace(/\bfa\s*vorite\b/gi, 'favorite')
+    .replace(/\bfav\s*orite\b/gi, 'favorite')
+    .replace(/\bse\s*cond\b/gi, 'second')
     .replace(/\bla\s+test\b/gi, 'latest')
     .replace(/\b(news|weather|search|look up)\s+(uh|um|erm)\b/gi, '$1')
     .replace(/\b(uh|um|erm)\s+(ai|weather|news|right now|today)\b/gi, '$1')
@@ -362,6 +357,8 @@ function repairFragmentedCommandWords(text) {
     'open', 'close', 'play', 'pause', 'resume', 'stop', 'skip', 'next', 'previous',
     'google', 'weather', 'information', 'search', 'latest', 'current', 'news',
     'forecast', 'temperature', 'default', 'device', 'devices', 'computer', 'computers',
+    'first', 'second', 'third', 'fourth', 'fifth',
+    'favorite', 'favourite', 'saved', 'music', 'song', 'songs', 'track', 'playlist',
     'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
     'message', 'connected', 'online', 'offline', 'name', 'names'
   ];

@@ -1,5 +1,7 @@
 import { query, nowIso } from './db.js';
 import { getUserTimeContext } from './time.js';
+import { formatCapabilitiesForPrompt } from './capabilities.js';
+import { listFavoriteTracks } from './favorites.js';
 
 const SHORT_TERM_LIMIT = 20;
 
@@ -87,9 +89,13 @@ export async function getRelevantMemories(search = '') {
 
 export async function buildSystemPrompt(address = 'Sir', search = '') {
   const memories = await getRelevantMemories(search);
+  const favoriteTracks = await listFavoriteTracks().catch(() => []);
   const facts = memories.longTerm.map((m) => `- ${m.content}`).join('\n') || '- No durable user facts yet.';
   const episodes = memories.episodic.map((m) => `- ${m.created_at}: ${m.content}`).join('\n') || '- No prior session summaries yet.';
   const recent = memories.shortTerm.map((m) => `${m.role}: ${m.content}`).join('\n') || 'No active conversation yet.';
+  const favorites = favoriteTracks.length
+    ? favoriteTracks.map((track, index) => `- ${index + 1}. ${track.title || track.url}`).join('\n')
+    : '- No favorite tracks saved.';
   const time = getUserTimeContext();
 
   return `You are JARVIS, a formal, intelligent, loyal AI assistant inspired by a cinematic armored-suit AI.
@@ -99,6 +105,19 @@ The user may speak English, Uzbek, or Russian. Detect the current language and a
 When speaking Uzbek, use natural Uzbek. When speaking Russian, use natural Russian Cyrillic. English remains fully supported.
 The user lives in Uzbekistan. User timezone: ${time.timeZone}.
 Current date/time for the user: ${time.dateTime}.
+
+Executable capabilities:
+${formatCapabilitiesForPrompt()}
+
+Favorite music from Settings:
+${favorites}
+
+Command understanding policy:
+- Do not treat a casual mention as a command. "YouTube is useful" is conversation, not an instruction.
+- Execute only when the user asks to do something, such as open, close, play, pause, search, remember, create, delete, check, set, mute, or list.
+- For computer-control requests, identify the action, the target app/site/media/favorite, and the target computer separately.
+- If the user asks for "my favorite song/music", use the saved Favorite Music list, not a YouTube search for the words "favorite song".
+- Never claim a computer action succeeded unless the backend controller returns a verified result.
 
 Long-term memory:
 ${facts}

@@ -245,7 +245,7 @@ function resolveWebsiteIntent(lower, original) {
     };
   }
 
-  if (/\b(youtube|you tube)\b/.test(lower)) {
+  if (/\b(youtube|you tube)\b/.test(lower) && hasExplicitWebsiteAction(lower, 'youtube')) {
     const query = extractSearchQuery(original, /(watch|play|look for|search(?: youtube)? for|find(?: videos?)?(?: about| on)?)/i, { site: 'youtube' });
     if (query && !isBareOpenTarget(query, ['youtube', 'you tube'])) {
       return {
@@ -257,7 +257,7 @@ function resolveWebsiteIntent(lower, original) {
     return { action: 'open_url', label: 'YouTube', url: APP_ALIASES.youtube.url };
   }
 
-  if (/\b(google|look up|search the web|search for|find me)\b/.test(lower)) {
+  if (/\b(google|look up|search the web|search for|find me)\b/.test(lower) && hasExplicitWebsiteAction(lower, 'google')) {
     const query = extractSearchQuery(original, /(google|look up|search the web for|search for|find me|look for|find)/i, { site: 'google' });
     if (query && !isBareOpenTarget(query, ['google'])) {
       return {
@@ -270,6 +270,22 @@ function resolveWebsiteIntent(lower, original) {
   }
 
   return null;
+}
+
+function hasExplicitWebsiteAction(lower, site) {
+  const target = site === 'youtube' ? '(?:youtube|you tube)' : 'google';
+  if (new RegExp(`\\b${target}\\s+(?:is|are|was|were|seems|looks|sounds|can|could|would|should)\\b`, 'i').test(lower)
+    && !new RegExp(`\\b(open|launch|start|go to|bring up|pull up|show|watch|play|search|find|look for)\\b.*\\b${target}\\b`, 'i').test(lower)) {
+    return false;
+  }
+  if (new RegExp(`^\\s*(?:jarvis\\s+)?${target}\\s*$`, 'i').test(lower)) return true;
+  if (new RegExp(`\\b(open|launch|start|go to|bring up|pull up|show)\\s+(?:the\\s+)?${target}\\b`, 'i').test(lower)) return true;
+  if (site === 'youtube') {
+    return /\b(watch|play|search|find|look for)\b.*\b(youtube|you tube)\b/i.test(lower)
+      || /\b(youtube|you tube)\b.*\b(search|find|look for|play|watch)\b/i.test(lower);
+  }
+  return /^(?:jarvis\s+)?google(?:\s+.+)?$/i.test(lower)
+    || /\b(look up|search the web|search for|find me)\b/i.test(lower);
 }
 
 function resolveGeneralPlayIntent(lower, original) {

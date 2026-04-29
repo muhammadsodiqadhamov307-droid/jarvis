@@ -77,8 +77,8 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
         const transcript = readLiveTranscripts(payload);
         const inputText = cleanMultilingualTranscript(transcript.inputText);
         const outputText = cleanMultilingualTranscript(transcript.outputText);
-        if (isLikelyControllerIntent(inputText) || isLikelySearchIntent(inputText)) {
-          suppressLiveAssistantUntilRef.current = Date.now() + 6000;
+        if (inputText || isLikelyControllerIntent(inputText) || isLikelySearchIntent(inputText)) {
+          suppressLiveAssistantUntilRef.current = Date.now() + 30000;
         }
         const suppressAssistant = Date.now() < suppressLiveAssistantUntilRef.current;
         handleLiveTranscripts({ inputText, outputText }, callbacksRef.current, assistantAudioBlockUntilRef, suppressAssistant);
@@ -773,7 +773,7 @@ function isLikelyControllerIntent(text) {
     /\b(telegram|youtube|google|chrome|spotify|calculator|explorer|word|excel|obs)\b/.test(normalized) ||
     /\b(device|devices|computer|computers|default device|default computer)\b/.test(normalized) ||
     /\b(message|text|dm|chat|contact|send message|send text)\b/.test(normalized) ||
-    /\b(play music|play song|pause music|resume music|next song|volume up|volume down)\b/.test(normalized) ||
+    /\b(play music|play song|play favorite|favorite song|favorite music|saved song|saved track|next favorite|pause music|resume music|next song|volume up|volume down)\b/.test(normalized) ||
     /\b(telegramni och|telegramni yop|musiqa qo|открой телеграм|закрой телеграм|включи музыку)\b/.test(normalized)
   );
 }
@@ -795,6 +795,9 @@ function normalizeControllerText(text) {
     .replace(/\bde\s+fault\b/g, 'default')
     .replace(/\bde\s+vice(?:s)?\b/g, 'device')
     .replace(/\bcom\s+puter(?:s)?\b/g, 'computer')
+    .replace(/\bfa\s*vorite\b/g, 'favorite')
+    .replace(/\bfav\s*orite\b/g, 'favorite')
+    .replace(/\bse\s*cond\b/g, 'second')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -804,6 +807,8 @@ function repairFragmentedControllerWords(text) {
     'open', 'close', 'play', 'pause', 'resume', 'stop', 'skip', 'next', 'previous',
     'google', 'weather', 'information', 'search', 'latest', 'current', 'news',
     'forecast', 'temperature', 'default', 'device', 'devices', 'computer', 'computers',
+    'first', 'second', 'third', 'fourth', 'fifth',
+    'favorite', 'favourite', 'saved', 'music', 'song', 'songs', 'track', 'playlist',
     'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
     'message', 'connected', 'online', 'offline', 'name', 'names'
   ];

@@ -24,6 +24,7 @@ import { formatUserDateTime, getUserTimeContext } from './time.js';
 import { getSettingsForClient, updateSettings } from './settings.js';
 import { getStartupStatus, setStartupEnabled } from './startup.js';
 import { dbProvider, initDatabase } from './db.js';
+import { COMMAND_CAPABILITIES } from './capabilities.js';
 import {
   addFavoriteTrack,
   deleteFavoriteTrack,
@@ -72,6 +73,17 @@ app.get('/api/health', (_req, res) => {
     elevenLabsConfigured: Boolean(process.env.ELEVENLABS_API_KEY),
     searchConfigured: Boolean(process.env.TAVILY_API_KEY || process.env.SERPAPI_KEY)
   });
+});
+
+app.get('/api/capabilities', async (_req, res, next) => {
+  try {
+    res.json({
+      capabilities: COMMAND_CAPABILITIES,
+      favorites: await listFavoriteTracks()
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/session', async (req, res, next) => {
@@ -483,9 +495,17 @@ initDatabase()
   });
 
 async function handleCommand(message, address) {
-  const parsed = await parseCommand(message);
+  const brainDevices = await safeListDevices();
+  const brainFavorites = await listFavoriteTracks().catch(() => []);
+  const parsed = await parseCommand(message, {
+    devices: brainDevices.map((device) => ({
+      ...device,
+      online: getDeviceReachability(device).online
+    })),
+    favorites: brainFavorites
+  });
   if (parsed) {
-    const parsedResult = await handleParsedCommand(message, parsed, address);
+    const parsedResult = await handleParsedCommand(message, parsed, address, brainDevices);
     if (parsedResult) return parsedResult;
     if (shouldPassParsedCommandToChat(parsed)) {
       return {
@@ -591,8 +611,8 @@ async function handleCommand(message, address) {
   return {};
 }
 
-async function handleParsedCommand(rawText, parsed, address) {
-  const devices = await safeListDevices();
+async function handleParsedCommand(rawText, parsed, address, devices = null) {
+  devices = devices || await safeListDevices();
   const tasks = normalizeParsedTasks(parsed);
   if (!tasks.length) return null;
 
@@ -1203,6 +1223,10 @@ function buildDesktopPlan(text, desktopIntent, devices, {
 function isFavoriteMusicRequest(text) {
   const normalized = String(text || '')
     .toLowerCase()
+    .replace(/\bfa\s*vorite\b/gi, 'favorite')
+    .replace(/\bfav\s*orite\b/gi, 'favorite')
+    .replace(/\bfa\s*vou\s*rite\b/gi, 'favourite')
+    .replace(/\bse\s*cond\b/gi, 'second')
     .replace(/[^\p{L}\p{N}' ]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -1757,6 +1781,8 @@ function repairFragmentedCommandWords(text) {
     'open', 'close', 'play', 'pause', 'resume', 'stop', 'skip', 'next', 'previous',
     'google', 'weather', 'information', 'search', 'latest', 'current', 'news',
     'forecast', 'temperature', 'default', 'device', 'devices', 'computer', 'computers',
+    'first', 'second', 'third', 'fourth', 'fifth',
+    'favorite', 'favourite', 'saved', 'music', 'song', 'songs', 'track', 'playlist',
     'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
     'message', 'connected', 'online', 'offline', 'name', 'names'
   ];

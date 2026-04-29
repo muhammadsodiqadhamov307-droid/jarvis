@@ -34,10 +34,15 @@ const APPS = new Set([
 
 const LANGUAGES = new Set(['en', 'uz', 'ru']);
 
-export async function parseCommand(rawText, timeoutMs = Number(process.env.GEMINI_INTENT_TIMEOUT_MS || 1800)) {
+export async function parseCommand(rawText, options = {}, timeoutMs = Number(process.env.GEMINI_INTENT_TIMEOUT_MS || 1800)) {
   if (!process.env.GEMINI_API_KEY) return null;
   const text = String(rawText || '').trim();
   if (!text) return null;
+  if (typeof options === 'number') {
+    timeoutMs = options;
+    options = {};
+  }
+  const context = normalizeBrainContext(options);
 
   const controller = new AbortController();
   const timeout = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : 1800;
@@ -45,7 +50,7 @@ export async function parseCommand(rawText, timeoutMs = Number(process.env.GEMIN
 
   try {
     for (const model of getParserModels()) {
-      const result = await parseWithModel(model, text, controller.signal);
+      const result = await parseWithModel(model, text, controller.signal, context);
       if (result) return result;
     }
     return null;
@@ -56,7 +61,7 @@ export async function parseCommand(rawText, timeoutMs = Number(process.env.GEMIN
   }
 }
 
-async function parseWithModel(model, text, signal) {
+async function parseWithModel(model, text, signal, context) {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
     const response = await fetch(url, {
@@ -65,7 +70,7 @@ async function parseWithModel(model, text, signal) {
       signal,
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: PARSER_SYSTEM_PROMPT }]
+          parts: [{ text: buildParserSystemPrompt(context) }]
         },
         contents: [
           {
@@ -89,6 +94,26 @@ async function parseWithModel(model, text, signal) {
   } catch {
     return null;
   }
+}
+
+function normalizeBrainContext(options = {}) {
+  const devices = Array.isArray(options.devices) ? options.devices : [];
+  const favorites = Array.isArray(options.favorites) ? options.favorites : [];
+  return {
+    devices: devices.map((device, index) => ({
+      index: index + 1,
+      name: String(device.name || '').trim(),
+      status: String(device.status || '').trim(),
+      isDefault: Boolean(device.is_default),
+      online: Boolean(device.online),
+      agentVersion: String(device.metadata?.agentVersion || '').trim()
+    })).filter((device) => device.name),
+    favorites: favorites.map((track, index) => ({
+      index: index + 1,
+      title: String(track.title || '').trim(),
+      url: String(track.url || '').trim()
+    })).filter((track) => track.title || track.url)
+  };
 }
 
 function getParserModels() {
@@ -173,7 +198,10 @@ function normalizeVolume(value) {
 }
 
 function looksLikeFavoriteRequest(...parts) {
-  const text = parts.filter(Boolean).join(' ').toLowerCase();
+  const text = parts.filter(Boolean).join(' ')
+    .toLowerCase()
+    .replace(/\bfa\s*vorite\b/gi, 'favorite')
+    .replace(/\bfav\s*orite\b/gi, 'favorite');
   return /\b(favou?rite|next favorite|saved song|saved track)\b/i.test(text)
     || /\bsevimli\b/i.test(text)
     || /\b(любим|избранн)\b/i.test(text);
@@ -213,11 +241,30 @@ function isDeviceOnlyQuery(value) {
   return /^(?:on|in|at|for|my|the|both|all|of|default|first|second|third|fourth|fifth|computer|computers|pc|pcs|laptop|laptops|desktop|desktops|device|devices|\d+|one|two|three|four|five|\s)+$/iu.test(normalized);
 }
 
-const PARSER_SYSTEM_PROMPT = `You are a command parser for a voice assistant called JARVIS.
+function buildParserSystemPrompt(context = {}) {
+  const devices = context.devices?.length
+    ? JSON.stringify(context.devices)
+    : '[]';
+  const favorites = context.favorites?.length
+    ? JSON.stringify(context.favorites)
+    : '[]';
+
+  return `You are the command brain for a voice assistant called JARVIS.
 The user speaks English, Uzbek, and Russian.
 Speech recognition may fragment words with extra spaces or broken syllables.
-You must repair fragmented words, understand the meaning, and return
-structured JSON only. No explanation, no markdown, no preamble.
+You must understand the full sentence, not isolated keywords.
+You know exactly what JARVIS can execute, which computers exist, and which favorite tracks are saved.
+Return structured JSON only. No explanation, no markdown, no preamble.
+
+Executable capabilities:
+${formatCapabilitiesForPrompt()}
+
+Approved/known devices:
+${devices}
+
+Favorite music saved in Settings:
+${favorites}
+
 Always return exactly this JSON shape:
 {
 "tasks": [
@@ -236,6 +283,16 @@ Always return exactly this JSON shape:
 Rules:
 
 Always return a "tasks" array. Even if there is only one task, wrap it in the array.
+Do not convert casual statements into commands. If the user merely mentions YouTube, Google, an app, a computer, or a favorite song without asking JARVIS to do something, return action "none".
+Only return executable actions when the user asks to open, close, play, pause, search, remember, create, delete, check, set, mute, list, or otherwise control something.
+Think first:
+1. Is this an instruction/request, or just conversation?
+2. If it is a request, which capability does it match?
+3. What is the action?
+4. What is the target app/site/media/favorite?
+5. What is the target device or devices?
+6. What content should be searched, if any?
+Never infer an executable command from keywords alone.
 Split compound commands into separate task objects.
 Each task must be fully self-contained with its own action, appOrSite, searchQuery, devices, favoritesPlay, volume, and rawIntent.
 searchQuery must contain ONLY the content to search for.
@@ -248,6 +305,8 @@ searchQuery must be "Mashxurbek Yuldashev Kapalagim".
 If the user says "google weather in Uzbekistan",
 searchQuery must be "weather in Uzbekistan".
 If the user says "play my favorite music", set favoritesPlay true and searchQuery null.
+If the user says "play my favorite song on my second computer", set favoritesPlay true, searchQuery null, devices ["my second computer"] or the exact matching device name from the known devices list.
+If the user says "my favorite song is nice" or "YouTube is good for videos", return action "none".
 If the user says "play my favorite song and set volume to max on computer 1",
 return two tasks: a play task with favoritesPlay true and a volume task with volume.action "max".
 If the user says "open Telegram on computer 1 and close YouTube on computer 2",
@@ -262,5 +321,8 @@ Uzbek volume examples: "ovozni oshir" -> up; "ovozni tushir" -> down;
 Russian volume examples: "громче" -> up; "тише" -> down; "выключи звук" -> mute.
 devices must always be an array. Default to ["default"] if no
 device is mentioned.
+When the user mentions a named device, preserve the display name from the known devices list whenever possible.
 Repair fragmented words silently. Do not mention the repair.
 Respond in JSON only. No other text.`;
+}
+import { formatCapabilitiesForPrompt } from './capabilities.js';
