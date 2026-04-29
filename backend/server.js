@@ -497,6 +497,9 @@ initDatabase()
 async function handleCommand(message, address) {
   const brainDevices = await safeListDevices();
   const brainFavorites = await listFavoriteTracks().catch(() => []);
+  const nonExecutable = buildNonExecutableReply(message, address, brainFavorites, brainDevices);
+  if (nonExecutable) return nonExecutable;
+
   const parsed = await parseCommand(message, {
     devices: brainDevices.map((device) => ({
       ...device,
@@ -505,6 +508,9 @@ async function handleCommand(message, address) {
     favorites: brainFavorites
   });
   if (parsed) {
+    const parsedBlocked = buildNonExecutableReply(parsed.rawIntent || message, address, brainFavorites, brainDevices, parsed);
+    if (parsedBlocked) return parsedBlocked;
+
     const parsedResult = await handleParsedCommand(message, parsed, address, brainDevices);
     if (parsedResult) return parsedResult;
     if (shouldPassParsedCommandToChat(parsed)) {
@@ -864,6 +870,19 @@ async function normalizeIncomingCommand(message) {
 
 async function analyzeCommand(text, address) {
   const devices = await safeListDevices();
+  const favorites = await listFavoriteTracks().catch(() => []);
+  const nonExecutable = buildNonExecutableReply(text, address, favorites, devices);
+  if (nonExecutable) {
+    return {
+      text,
+      plan: {
+        kind: 'reply',
+        command: nonExecutable.command,
+        payload: nonExecutable.payload,
+        reply: nonExecutable.reply
+      }
+    };
+  }
 
   const favoritePlan = await buildFavoriteMusicFallbackPlan(text, devices, address);
   if (favoritePlan) {
@@ -915,7 +934,7 @@ async function analyzeCommand(text, address) {
 
     if (intent.type === 'desktop') {
       const desktopIntent = resolveDesktopIntent(commandText);
-      if (desktopIntent) {
+      if (desktopIntent && isSafeFallbackDesktopCommand(commandText)) {
         return {
           text,
           plan: buildDesktopPlan(commandText, desktopIntent, devices, {
@@ -929,7 +948,7 @@ async function analyzeCommand(text, address) {
   }
 
   const explicitLocalDesktopIntent = resolveDesktopIntent(text);
-  if (explicitLocalDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(text)) {
+  if (explicitLocalDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(text) && isSafeFallbackDesktopCommand(text)) {
     return {
       text,
       plan: buildDesktopPlan(text, explicitLocalDesktopIntent, devices, { source: 'local' })
@@ -960,7 +979,7 @@ async function analyzeCommand(text, address) {
   }
 
   const localDesktopIntent = resolveDesktopIntent(text);
-  if (localDesktopIntent) {
+  if (localDesktopIntent && isSafeFallbackDesktopCommand(text)) {
     return {
       text,
       plan: buildDesktopPlan(text, localDesktopIntent, devices, { source: 'local' })
@@ -971,7 +990,7 @@ async function analyzeCommand(text, address) {
 }
 
 async function buildFavoriteMusicFallbackPlan(text, devices, address) {
-  if (!isFavoriteMusicRequest(text)) return null;
+  if (!isFavoriteMusicRequest(text) || !isSafeFallbackDesktopCommand(text)) return null;
 
   const favoriteTrack = await getNextFavoriteTrack();
   if (!favoriteTrack) {
@@ -1007,6 +1026,80 @@ async function buildFavoriteMusicFallbackPlan(text, devices, address) {
     parser,
     favoriteTrack
   });
+}
+
+function buildNonExecutableReply(text, address, favorites = [], devices = [], parsed = null) {
+  const normalized = normalizeDecisionText(text);
+  if (!normalized || isSafeFallbackDesktopCommand(normalized)) return null;
+  if (!isKnowledgeOrDiscussion(normalized)) return null;
+
+  if (/\b(favou?rite|saved|sevimli|yoqtirgan)\b/i.test(normalized)
+    && /\b(song|songs|music|track|playlist|audio)\b/i.test(normalized)) {
+    const favoriteNames = favorites.length
+      ? favorites.map((track) => track.title || track.url).join(', ')
+      : '';
+    return {
+      command: 'favorites:info',
+      payload: { favorites, parsed },
+      reply: favoriteNames
+        ? `Your saved favorite track is ${favoriteNames}, ${address}. Say "play my favorite song" when you want me to play it.`
+        : `You have no favorite tracks saved yet, ${address}. Add one in Settings under Favorite Music.`
+    };
+  }
+
+  if (/\b(what|which|list|show|tell|can|could|do)\b/i.test(normalized)
+    && /\b(can you do|things you can do|capabilities|commands|execute|able to do)\b/i.test(normalized)) {
+    return {
+      command: 'capabilities:info',
+      payload: { parsed },
+      reply: `I can control linked Windows computers, play saved favorite music, manage notes and memory, check devices, search the web, calculate, tell time, and set reminders, ${address}.`
+    };
+  }
+
+  if (/\b(device|devices|computer|computers|pc|laptop|target|targets)\b/i.test(normalized)
+    && /\b(know|about|what|which|list|show|tell|status|online|connected|default|name|names)\b/i.test(normalized)) {
+    const approved = (devices || []).filter((device) => device.status === 'approved');
+    const names = approved.map((device) => `${device.name}${device.is_default ? ' (default)' : ''}`).join(', ');
+    return {
+      command: 'devices:info',
+      payload: { devices: approved, parsed },
+      reply: names
+        ? `Your approved computers are ${names}, ${address}. Say a clear command like "open YouTube on my second computer" when you want me to act.`
+        : `I do not see any approved computers yet, ${address}.`
+    };
+  }
+
+  return null;
+}
+
+function isKnowledgeOrDiscussion(text) {
+  return /^(?:ok(?:ay)?\s+)?(?:jarvis\s+)?(?:do|did|can|could|would|will|are|is|what|which|who|where|when|why|how)\b/i.test(text)
+    || /\b(?:do you know|you know|anything about|tell me about|what do you know|what kind of things|things you can do|capabilities|commands you can|is a|are a|seems|looks|sounds)\b/i.test(text);
+}
+
+function isSafeFallbackDesktopCommand(text) {
+  const normalized = normalizeDecisionText(text);
+  if (!normalized) return false;
+  if (/\b(do you know|you know|anything about|tell me about|what do you know|what kind of things|is a|are a)\b/i.test(normalized)) {
+    return false;
+  }
+  return /^(?:jarvis\s+)?(?:please\s+)?(?:open|launch|start|run|close|quit|exit|play|put on|pause|resume|stop|skip|next|previous|mute|unmute|set|turn|volume|search|google|look up|find|show)\b/i.test(normalized)
+    || /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:open|launch|start|run|close|quit|exit|play|put on|pause|resume|stop|skip|next|previous|mute|unmute|set|turn|search|google|look up|find|show)\b/i.test(normalized)
+    || /^(?:jarvis\s+)?(?:pen|o pen)\s+(?:youtube|google|telegram|chrome|spotify|calculator|explorer)\b/i.test(normalized);
+}
+
+function normalizeDecisionText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/<noise>/gi, ' ')
+    .replace(/\bfa\s*vorite\b/gi, 'favorite')
+    .replace(/\bfav\s*orite\b/gi, 'favorite')
+    .replace(/\bse\s*cond\b/gi, 'second')
+    .replace(/\bcom\s*puter\b/gi, 'computer')
+    .replace(/\byou\s*tube\b/gi, 'youtube')
+    .replace(/[^\p{L}\p{N}' ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function executeCommandPlan(plan, address) {

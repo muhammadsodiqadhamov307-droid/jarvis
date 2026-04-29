@@ -119,9 +119,7 @@ function normalizeBrainContext(options = {}) {
 function getParserModels() {
   const models = [
     process.env.GEMINI_INTENT_MODEL,
-    'gemini-3.1-flash-lite',
     'gemini-2.5-flash-lite',
-    'gemini-2-flash',
     'gemini-2.5-flash',
     process.env.GEMINI_TEXT_MODEL,
     ...(process.env.GEMINI_INTENT_FALLBACK_MODELS || '').split(',')

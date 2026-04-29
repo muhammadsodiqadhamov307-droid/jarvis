@@ -66,12 +66,9 @@ function getIntentModels() {
     process.env.GEMINI_INTENT_MODEL,
     'gemini-flash-lite-latest',
     'gemini-2.5-flash-lite',
-    'gemini-2.0-flash-lite',
     process.env.GEMINI_TEXT_MODEL,
     ...(process.env.GEMINI_INTENT_FALLBACK_MODELS || '').split(','),
-    'gemini-3-flash-preview',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash'
+    'gemini-2.5-flash'
   ];
   return [...new Set(configured.map((model) => String(model || '').trim()).filter(Boolean))];
 }
