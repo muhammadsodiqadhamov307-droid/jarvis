@@ -506,6 +506,28 @@ async function handleCommand(message, address) {
     return executeCommandPlan(fastFavoritePlan, address);
   }
 
+  const fastDesktopIntent = resolveDesktopIntent(fastNormalizedText);
+  if (fastDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(fastNormalizedText) && isSafeFallbackDesktopCommand(fastNormalizedText)) {
+    return executeCommandPlan(buildDesktopPlan(fastNormalizedText, fastDesktopIntent, brainDevices, { source: 'local' }), address);
+  }
+
+  if (isExplicitFastSearchRequest(fastNormalizedText)) {
+    return executeCommandPlan({
+      kind: 'search',
+      query: stripSearchTrigger(fastNormalizedText),
+      originalText: fastNormalizedText,
+      meta: { source: 'local-fast' }
+    }, address);
+  }
+
+  if (isDeviceStatusRequest(fastNormalizedText)) {
+    return executeCommandPlan({
+      kind: 'device_status',
+      text: fastNormalizedText,
+      meta: { source: 'local-fast' }
+    }, address);
+  }
+
   const parsed = await parseCommand(message, {
     devices: brainDevices.map((device) => ({
       ...device,
@@ -2011,6 +2033,11 @@ function isSlowLookup(message) {
 function isSearchRequest(message) {
   return /^(search|web search|search online|look up|google)\b/i.test(message)
     || /\b(latest|news|weather|forecast|temperature|current|today|online|internet|what happened)\b/i.test(message);
+}
+
+function isExplicitFastSearchRequest(message) {
+  return /^(search|web search|search online|look up|google)\b/i.test(message)
+    || /\b(search the web|search online|latest|news|weather|forecast|temperature|current|online|internet|what happened)\b/i.test(message);
 }
 
 function isExplicitWebsiteCommand(message) {
