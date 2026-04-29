@@ -507,7 +507,7 @@ async function handleCommand(message, address) {
   }
 
   const fastDesktopIntent = resolveDesktopIntent(fastNormalizedText);
-  if (fastDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(fastNormalizedText) && isSafeFallbackDesktopCommand(fastNormalizedText)) {
+  if (fastDesktopIntent && isSafeFallbackDesktopCommand(fastNormalizedText)) {
     return executeCommandPlan(buildDesktopPlan(fastNormalizedText, fastDesktopIntent, brainDevices, { source: 'local' }), address);
   }
 
@@ -921,7 +921,7 @@ async function analyzeCommand(text, address) {
   }
 
   const explicitLocalDesktopIntent = resolveDesktopIntent(text);
-  if (explicitLocalDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(text) && isSafeFallbackDesktopCommand(text)) {
+  if (explicitLocalDesktopIntent && isSafeFallbackDesktopCommand(text)) {
     return {
       text,
       plan: buildDesktopPlan(text, explicitLocalDesktopIntent, devices, { source: 'local' })
