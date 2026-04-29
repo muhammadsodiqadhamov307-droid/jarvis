@@ -898,6 +898,37 @@ async function analyzeCommand(text, address) {
     };
   }
 
+  const explicitLocalDesktopIntent = resolveDesktopIntent(text);
+  if (explicitLocalDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(text) && isSafeFallbackDesktopCommand(text)) {
+    return {
+      text,
+      plan: buildDesktopPlan(text, explicitLocalDesktopIntent, devices, { source: 'local' })
+    };
+  }
+
+  if (isSearchRequest(text)) {
+    return {
+      text,
+      plan: {
+        kind: 'search',
+        query: stripSearchTrigger(text),
+        originalText: text,
+        meta: { source: 'local' }
+      }
+    };
+  }
+
+  if (isDeviceStatusRequest(text)) {
+    return {
+      text,
+      plan: {
+        kind: 'device_status',
+        text,
+        meta: { source: 'local' }
+      }
+    };
+  }
+
   const intent = await classifyIntent(text, { devices, address });
   const minimumConfidence = Number(process.env.INTENT_CONFIDENCE_THRESHOLD || 0.62);
   const confidentIntent = intent && intent.type !== 'none' && intent.confidence >= minimumConfidence;
@@ -970,7 +1001,6 @@ async function analyzeCommand(text, address) {
     }
   }
 
-  const explicitLocalDesktopIntent = resolveDesktopIntent(text);
   if (explicitLocalDesktopIntent?.action === 'open_url' && isExplicitWebsiteCommand(text) && isSafeFallbackDesktopCommand(text)) {
     return {
       text,
