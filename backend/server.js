@@ -844,6 +844,15 @@ async function normalizeIncomingCommand(message) {
 
 async function analyzeCommand(text, address) {
   const devices = await safeListDevices();
+
+  const favoritePlan = await buildFavoriteMusicFallbackPlan(text, devices, address);
+  if (favoritePlan) {
+    return {
+      text,
+      plan: favoritePlan
+    };
+  }
+
   const intent = await classifyIntent(text, { devices, address });
   const minimumConfidence = Number(process.env.INTENT_CONFIDENCE_THRESHOLD || 0.62);
   const confidentIntent = intent && intent.type !== 'none' && intent.confidence >= minimumConfidence;
@@ -939,6 +948,45 @@ async function analyzeCommand(text, address) {
   }
 
   return null;
+}
+
+async function buildFavoriteMusicFallbackPlan(text, devices, address) {
+  if (!isFavoriteMusicRequest(text)) return null;
+
+  const favoriteTrack = await getNextFavoriteTrack();
+  if (!favoriteTrack) {
+    return {
+      kind: 'reply',
+      command: 'favorites:empty',
+      payload: null,
+      reply: `You have no favorite tracks saved, ${address}. Add some in Settings.`
+    };
+  }
+
+  const desktopIntent = {
+    action: 'open_url',
+    label: favoriteTrack.title || 'Favorite track',
+    url: favoriteTrack.url,
+    favoriteTrack
+  };
+
+  const parser = {
+    action: 'play',
+    appOrSite: null,
+    searchQuery: null,
+    devices: ['default'],
+    favoritesPlay: true,
+    rawIntent: text,
+    favoriteTrack
+  };
+
+  return buildDesktopPlan(text, desktopIntent, devices, {
+    source: 'local-favorite',
+    intent: null,
+    explicitTargetDevice: '',
+    parser,
+    favoriteTrack
+  });
 }
 
 async function executeCommandPlan(plan, address) {
@@ -1132,7 +1180,13 @@ function normalizeIntentCommandText(intent, fallbackText) {
   return normalizeSpokenCommand(parts.join(' '));
 }
 
-function buildDesktopPlan(text, desktopIntent, devices, { source = 'local', intent = null, explicitTargetDevice = '' } = {}) {
+function buildDesktopPlan(text, desktopIntent, devices, {
+  source = 'local',
+  intent = null,
+  explicitTargetDevice = '',
+  parser = null,
+  favoriteTrack = null
+} = {}) {
   const approved = (devices || []).filter((device) => device.status === 'approved');
   const selection = resolveTargetDevices(text, approved, explicitTargetDevice);
 
@@ -1140,10 +1194,26 @@ function buildDesktopPlan(text, desktopIntent, devices, { source = 'local', inte
     kind: 'desktop',
     text,
     desktopIntent,
-    meta: { source, intent },
+    meta: { source, intent, parser, favoriteTrack },
     targets: selection.targets,
     requestedNames: selection.requestedNames
   };
+}
+
+function isFavoriteMusicRequest(text) {
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}' ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  if (/\b(pause|resume|stop|skip|previous|volume|mute|unmute|close|delete|remove)\b/i.test(normalized)) return false;
+  const wantsPlayback = /\b(play|put on|start|open|listen|qo['`]?y|ijro et|yoq)\b/i.test(normalized);
+  const favoriteCue = /\b(favou?rite|saved|sevimli|yoqtirgan)\b/i.test(normalized)
+    || /\bnext favorite\b/i.test(normalized);
+  const musicCue = /\b(song|songs|music|track|playlist|audio|qo['`]?shiq|musiqa|ashula)\b/i.test(normalized)
+    || /\bnext favorite\b/i.test(normalized);
+  return favoriteCue && (wantsPlayback || musicCue);
 }
 
 function resolveRequestedDeviceName(text, explicitTargetDevice = '') {
@@ -1533,7 +1603,7 @@ function buildRemoteSuccessPhrase(execution, meta = {}) {
 
   if (type === 'open_url') {
     const favorite = payload.favoriteTrack || meta.favoriteTrack || parsed?.favoriteTrack;
-    if (parsed?.favoritesPlay && favorite?.title) return `Playing ${favorite.title}`;
+    if ((parsed?.favoritesPlay || favorite) && favorite?.title) return `Playing ${favorite.title}`;
     const details = describeUrlCommand(payload.url, payload.label, parsed);
     if (details.site === 'YouTube') return details.query ? `Searching YouTube for ${details.query}` : 'Opening YouTube';
     if (details.site === 'Google') return details.query ? `Searching Google for ${details.query}` : 'Opening Google';
