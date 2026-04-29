@@ -500,6 +500,12 @@ async function handleCommand(message, address) {
   const nonExecutable = buildNonExecutableReply(message, address, brainFavorites, brainDevices);
   if (nonExecutable) return nonExecutable;
 
+  const fastNormalizedText = normalizeSpokenCommand(message);
+  const fastFavoritePlan = await buildFavoriteMusicFallbackPlan(fastNormalizedText, brainDevices, address);
+  if (fastFavoritePlan) {
+    return executeCommandPlan(fastFavoritePlan, address);
+  }
+
   const parsed = await parseCommand(message, {
     devices: brainDevices.map((device) => ({
       ...device,
@@ -933,6 +939,23 @@ async function analyzeCommand(text, address) {
     }
 
     if (intent.type === 'desktop') {
+      const favoritePlan = await buildFavoriteMusicFallbackPlan(
+        [commandText, intent.query, intent.normalizedText, text].filter(Boolean).join(' '),
+        devices,
+        address
+      );
+      if (favoritePlan) {
+        favoritePlan.meta = {
+          ...(favoritePlan.meta || {}),
+          source: 'nlp-favorite',
+          intent
+        };
+        return {
+          text,
+          plan: favoritePlan
+        };
+      }
+
       const desktopIntent = resolveDesktopIntent(commandText);
       if (desktopIntent && isSafeFallbackDesktopCommand(commandText)) {
         return {
@@ -1083,17 +1106,22 @@ function isSafeFallbackDesktopCommand(text) {
   if (/\b(do you know|you know|anything about|tell me about|what do you know|what kind of things|is a|are a)\b/i.test(normalized)) {
     return false;
   }
-  return /^(?:jarvis\s+)?(?:please\s+)?(?:open|launch|start|run|close|quit|exit|play|put on|pause|resume|stop|skip|next|previous|mute|unmute|set|turn|volume|search|google|look up|find|show)\b/i.test(normalized)
+  const commandVerb = '(?:open|launch|start|run|close|quit|exit|play|put on|pause|resume|stop|skip|next|previous|mute|unmute|set|turn|volume|search|google|look up|find|show)';
+  return new RegExp(`^(?:jarvis\\s+)?(?:please\\s+)?${commandVerb}\\b`, 'i').test(normalized)
     || /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:open|launch|start|run|close|quit|exit|play|put on|pause|resume|stop|skip|next|previous|mute|unmute|set|turn|search|google|look up|find|show)\b/i.test(normalized)
+    || new RegExp(`^(?:no\\s+\\w+\\s+)?(?:i\\s+)?(?:want|need)\\s+you\\s+to\\s+${commandVerb}\\b`, 'i').test(normalized)
+    || new RegExp(`^(?:no\\s+\\w+\\s+)?(?:i\\s+)?(?:only|just)?\\s*need\\s+to\\s+${commandVerb}\\b`, 'i').test(normalized)
     || /^(?:jarvis\s+)?(?:pen|o pen)\s+(?:youtube|google|telegram|chrome|spotify|calculator|explorer)\b/i.test(normalized);
 }
 
 function normalizeDecisionText(text) {
-  return String(text || '')
-    .toLowerCase()
+  return repairFragmentedCommandWords(String(text || '').toLowerCase())
     .replace(/<noise>/gi, ' ')
     .replace(/\bfa\s*vorite\b/gi, 'favorite')
     .replace(/\bfav\s*orite\b/gi, 'favorite')
+    .replace(/\bmy\s+ver(?:y|ite)?\s+song\b/gi, 'my favorite song')
+    .replace(/\bpla\s+/gi, 'play ')
+    .replace(/\bcond\s+computer\b/gi, 'second computer')
     .replace(/\bse\s*cond\b/gi, 'second')
     .replace(/\bcom\s*puter\b/gi, 'computer')
     .replace(/\byou\s*tube\b/gi, 'youtube')
@@ -1827,6 +1855,9 @@ function normalizeSpokenCommand(text) {
   const merged = mergeSpelledOutWords(String(text || ''));
   return repairFragmentedCommandWords(normalizeMultilingualCommand(merged))
     .replace(/\bo\s+pen\b/gi, 'open')
+    .replace(/\bpla\s+/gi, 'play ')
+    .replace(/\bmy\s+ver(?:y|ite)?\s+song\b/gi, 'my favorite song')
+    .replace(/\bcond\s+computer\b/gi, 'second computer')
     .replace(/\bte\s+le\s*gram\b/gi, 'telegram')
     .replace(/\byou\s+tube\b/gi, 'youtube')
     .replace(/\bgoo\s+gle\b/gi, 'google')
@@ -1877,7 +1908,8 @@ function repairFragmentedCommandWords(text) {
     'first', 'second', 'third', 'fourth', 'fifth',
     'favorite', 'favourite', 'saved', 'music', 'song', 'songs', 'track', 'playlist',
     'telegram', 'youtube', 'chrome', 'spotify', 'explorer', 'calculator',
-    'message', 'connected', 'online', 'offline', 'name', 'names'
+    'message', 'connected', 'online', 'offline', 'name', 'names',
+    'only', 'just', 'need', 'want', 'please'
   ];
 
   return replacements.reduce((current, word) => {

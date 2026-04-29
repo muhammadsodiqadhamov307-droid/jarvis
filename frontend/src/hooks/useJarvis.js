@@ -237,11 +237,11 @@ export function useJarvis() {
       if (meta?.command?.startsWith('notes')) refreshNotes();
       if (meta?.command === 'search') {
         setSearchResults(meta.payload);
-        voice.sendLiveText?.(`Read this verified web result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`);
+        voice.sendLiveText?.(`Read this verified web result to ${address} in one concise JARVIS response. Do not mention that this is a prompt. ${reply}`, { suppressTranscript: true });
       } else if (reply && (meta?.command?.startsWith('desktop') || meta?.command?.startsWith('devices'))) {
-        voice.sendLiveText?.(`Say exactly this verified controller result and nothing else: ${reply}`);
+        voice.sendLiveText?.(`Say exactly this verified controller result and nothing else: ${reply}`, { suppressTranscript: true });
       } else if (reply) {
-        voice.sendLiveText?.(`Say exactly this JARVIS response and nothing else: ${reply}`);
+        voice.sendLiveText?.(`Say exactly this JARVIS response and nothing else: ${reply}`, { suppressTranscript: true });
       }
     } catch (error) {
       const reply = `A fault has occurred, ${address}: ${error.message}. I remain composed, naturally.`;

@@ -42,6 +42,7 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
   const startingRef = useRef(false);
   const assistantAudioBlockUntilRef = useRef(0);
   const suppressLiveAssistantUntilRef = useRef(0);
+  const suppressBackendLiveTranscriptUntilRef = useRef(0);
   const callbacksRef = useRef({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus, onLiveTranscript, onLiveFinalText, onLiveToolResult });
 
   useEffect(() => {
@@ -81,7 +82,8 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
           suppressLiveAssistantUntilRef.current = Date.now() + 30000;
         }
         const suppressAssistant = Date.now() < suppressLiveAssistantUntilRef.current;
-        handleLiveTranscripts({ inputText, outputText }, callbacksRef.current, assistantAudioBlockUntilRef, suppressAssistant);
+        const suppressTranscript = suppressAssistant || Date.now() < suppressBackendLiveTranscriptUntilRef.current;
+        handleLiveTranscripts({ inputText, outputText }, callbacksRef.current, assistantAudioBlockUntilRef, suppressTranscript);
         if (suppressAssistant && hasLiveAudio(payload)) return;
         playLiveAudio(payload, audioContextRef.current, livePlaybackTimeRef, activeSourceRef, liveSourcesRef, assistantAudioBlockUntilRef, {
           onStart: () => {
@@ -404,12 +406,13 @@ export function useVoice({ onFinalText, onSpeechStart, onSpeechEnd, onLiveStatus
     cancelSpeech();
   }, [cancelSpeech, stopMetering]);
 
-  const sendLiveText = useCallback((text) => {
+  const sendLiveText = useCallback((text, options = {}) => {
     if (!LIVE_AUDIO_ENABLED) return false;
     const cleaned = String(text || '').trim();
     const ws = wsRef.current;
     if (!cleaned || !ws || ws.readyState !== WebSocket.OPEN || intentionallyStoppedRef.current) return false;
     suppressLiveAssistantUntilRef.current = 0;
+    suppressBackendLiveTranscriptUntilRef.current = options.suppressTranscript ? Date.now() + 30000 : 0;
     ws.send(JSON.stringify({
       clientContent: {
         turns: [
